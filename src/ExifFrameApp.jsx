@@ -429,7 +429,6 @@ export default function ExifFrameApp() {
   });
   const [error, setError] = useState(null);
   const [fileName, setFileName] = useState("");
-  const [savedUrl, setSavedUrl] = useState(null);
   const canvasRef = useRef(null);
 
   const handleFile = useCallback(async (file) => {
@@ -684,10 +683,9 @@ export default function ExifFrameApp() {
     // toBlob can return null on mobile if the canvas is too large / low memory.
     canvas.toBlob((blob) => {
       if (!blob) {
-        // fallback 1: try a data URL directly
+        // fallback: try a data URL directly
         try {
-          const dataUrl = canvas.toDataURL("image/png");
-          openOrDownload(dataUrl, filename, true);
+          triggerDownload(canvas.toDataURL("image/png"), filename);
         } catch (err) {
           setError(
             "이미지를 저장용으로 만드는 데 실패했어요. 사진이 너무 큰 것 같아요. 다른 사진으로 시도하거나, 화면을 캡처해 저장해주세요."
@@ -696,26 +694,19 @@ export default function ExifFrameApp() {
         return;
       }
       const url = URL.createObjectURL(blob);
-      openOrDownload(url, filename, false);
-      // revoke later so mobile has time to start the download/preview
+      triggerDownload(url, filename);
+      // revoke later so the browser has time to start the download
       setTimeout(() => URL.revokeObjectURL(url), 60000);
     }, "image/png");
   };
 
-  // iOS Safari mostly ignores <a download>. On mobile, open the image in a new
-  // view so the user can long-press → "사진에 추가". Desktop uses real download.
-  const openOrDownload = (url, filename, isDataUrl) => {
-    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-    if (isMobile) {
-      setSavedUrl(url); // show an inline preview with save instructions
-    } else {
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-    }
+  const triggerDownload = (url, filename) => {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   };
 
   const exifRows = exif
@@ -904,48 +895,6 @@ export default function ExifFrameApp() {
           </>
         )}
       </div>
-
-      {/* mobile save overlay: long-press the image to save to Photos */}
-      {savedUrl && (
-        <div
-          onClick={() => setSavedUrl(null)}
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.92)",
-            zIndex: 1000,
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: 20,
-            gap: 16,
-          }}
-        >
-          <div style={{ color: "#c4581f", fontSize: 13, letterSpacing: 1, textAlign: "center" }}>
-            이미지를 길게 눌러 "사진에 추가" / "이미지 저장"을 선택하세요
-          </div>
-          <img
-            src={savedUrl}
-            alt="framed result"
-            style={{ maxWidth: "100%", maxHeight: "70vh", borderRadius: 4, objectFit: "contain" }}
-          />
-          <button
-            onClick={() => setSavedUrl(null)}
-            style={{
-              padding: "10px 20px",
-              fontSize: 13,
-              borderRadius: 4,
-              border: "1px solid #4a453d",
-              background: "transparent",
-              color: "#c9c3b4",
-              cursor: "pointer",
-            }}
-          >
-            닫기
-          </button>
-        </div>
-      )}
     </div>
   );
 }
