@@ -446,6 +446,83 @@ function fmtDatabackDate(v) {
   return `'${m[1].slice(2)} ${m[2]} ${m[3]}`;
 }
 
+function cameraNameOf(exif) {
+  const make = (exif?.Make || "").trim();
+  const model = (exif?.Model || "").trim();
+  if (make && model) return model.toLowerCase().startsWith(make.toLowerCase()) ? model : `${make} ${model}`;
+  return make || model || "";
+}
+
+// ---------- 35mm film-strip frame ----------
+// Dark film base with sprocket-hole rows top & bottom and orange film
+// edge-printing (camera / frame no. / settings / date) in the inner lanes.
+function drawFilmStrip(ctx, canvas, drawW, drawH, imgEl, exif, fields, caption) {
+  const borderX = Math.round(drawW * 0.04);
+  const bandH = Math.round(drawW * 0.12);
+  const canvasW = drawW + borderX * 2;
+  const canvasH = drawH + bandH * 2;
+  canvas.width = canvasW;
+  canvas.height = canvasH;
+
+  // film base + photo
+  ctx.fillStyle = "#141009";
+  ctx.fillRect(0, 0, canvasW, canvasH);
+  ctx.drawImage(imgEl, borderX, bandH, drawW, drawH);
+
+  // sprocket holes fill the outer part of each band; the inner "lane"
+  // (adjacent to the photo) is reserved for edge printing.
+  const laneH = Math.round(bandH * 0.42);
+  const holeW = Math.round(bandH * 0.5);
+  const holeH = Math.round(bandH * 0.34);
+  const holeR = holeH * 0.28;
+  const gap = Math.round(holeW * 0.75);
+  const pitch = holeW + gap;
+  const nHoles = Math.max(1, Math.floor((canvasW + gap) / pitch));
+  const totalW = nHoles * pitch - gap;
+  const startX = Math.round((canvasW - totalW) / 2);
+  const sprocketBox = bandH - laneH;
+  const topHoleY = Math.round((sprocketBox - holeH) / 2);
+  const botHoleY = Math.round(bandH + drawH + laneH + (sprocketBox - holeH) / 2);
+  ctx.fillStyle = "#d8d2c1";
+  for (let i = 0; i < nHoles; i++) {
+    const hx = startX + i * pitch;
+    roundRectPath(ctx, hx, topHoleY, holeW, holeH, holeR);
+    ctx.fill();
+    roundRectPath(ctx, hx, botHoleY, holeW, holeH, holeR);
+    ctx.fill();
+  }
+
+  // orange edge printing
+  const orange = "#e0862b";
+  const fs = Math.max(11, Math.round(drawW * 0.019));
+  const pad = borderX + Math.round(drawW * 0.012);
+  ctx.fillStyle = orange;
+  ctx.font = `700 ${fs}px "Courier New", monospace`;
+  ctx.textBaseline = "alphabetic";
+
+  // TOP lane: camera model (left) + frame number (right)
+  const topBase = bandH - Math.round(laneH * 0.3);
+  const cam = cameraNameOf(exif);
+  ctx.textAlign = "left";
+  if (fields.camera && cam) ctx.fillText(cam.toUpperCase(), pad, topBase);
+  ctx.textAlign = "right";
+  ctx.fillText("▶ 24A", canvasW - pad, topBase);
+
+  // BOTTOM lane: settings (left) + date (right)
+  const botBase = bandH + drawH + Math.round(laneH * 0.72);
+  ctx.textAlign = "left";
+  if (fields.settings && exif) {
+    const parts = [fmtFocal(exif.FocalLength), fmtFNumber(exif.FNumber), fmtExposure(exif.ExposureTime), fmtISO(exif.ISO)].filter(Boolean);
+    if (parts.length) ctx.fillText(parts.join("  "), pad, botBase);
+  }
+  ctx.textAlign = "right";
+  const dstr = fields.date ? fmtDatabackDate(exif?.DateTimeOriginal) : null;
+  if (dstr) ctx.fillText(dstr, canvasW - pad, botBase);
+  else if (caption?.trim()) ctx.fillText(caption.trim().toUpperCase(), canvasW - pad, botBase);
+
+  ctx.textAlign = "left";
+}
+
 export default function ExifFrameApp() {
   const [imgEl, setImgEl] = useState(null);
   const [exif, setExif] = useState(null);
@@ -587,6 +664,12 @@ export default function ExifFrameApp() {
     // frame just uses the image's own dimensions — no rotation needed here.
     const drawW = imgEl.naturalWidth;
     const drawH = imgEl.naturalHeight;
+
+    // film uses its own strip geometry (sprocket bands top & bottom)
+    if (frameStyle === "film") {
+      drawFilmStrip(ctx, canvas, drawW, drawH, imgEl, exif, fields, caption);
+      return;
+    }
 
     const border = style.border;
     const bottomExtra = style.bottomExtra;
