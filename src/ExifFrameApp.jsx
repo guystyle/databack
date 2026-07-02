@@ -153,6 +153,14 @@ const STYLES = {
     textColor: "#ff5a1f",
     labelColor: "#ff5a1f",
   },
+  lcd: {
+    label: "LCD",
+    bg: null, // overlay panel on top of the full-bleed image
+    border: 0,
+    bottomExtra: 0,
+    textColor: "#1a1f16",
+    labelColor: "#1a1f16",
+  },
 };
 
 // ---------- 7-segment databack renderer ----------
@@ -163,11 +171,12 @@ const SEG = {
 const DB_SLANT = 0.09; // italic shear (smaller = more upright)
 
 // draw one seven-segment digit into ctx with italic shear around baseline (y+h)
-function drawSegDigit(ctx, x, y, w, h, ch, t) {
+// slant defaults to the databack tuning; pass 0 for upright (LCD) glyphs.
+function drawSegDigit(ctx, x, y, w, h, ch, t, slant = DB_SLANT) {
   const segs = SEG[ch] || "";
   const midy = y + h / 2;
   const g = t * 0.3;
-  const sh = (px, py) => [px + (y + h - py) * DB_SLANT, py]; // shear x by height above baseline
+  const sh = (px, py) => [px + (y + h - py) * slant, py]; // shear x by height above baseline
   const poly = (pts) => {
     ctx.beginPath();
     pts.forEach((p, i) => {
@@ -195,10 +204,30 @@ function drawSegDigit(ctx, x, y, w, h, ch, t) {
   if (segs.includes("c")) vbar(x + w, midy, y + h);
 }
 
-function drawSegApos(ctx, x, y, h, t) {
-  const sh = (px, py) => [px + (y + h - py) * DB_SLANT, py];
+function drawSegApos(ctx, x, y, h, t, slant = DB_SLANT) {
+  const sh = (px, py) => [px + (y + h - py) * slant, py];
   ctx.beginPath();
   [[x, y], [x + t, y], [x + t * 0.7, y + h * 0.28], [x - t * 0.3, y + h * 0.28]].forEach((p, i) => {
+    const [sx, sy] = sh(p[0], p[1]);
+    if (i === 0) ctx.moveTo(sx, sy);
+    else ctx.lineTo(sx, sy);
+  });
+  ctx.closePath();
+  ctx.fill();
+}
+
+// a decimal point (small square sitting on the baseline) — used by the LCD panel
+function drawSegDot(ctx, x, y, h, t, slant = DB_SLANT) {
+  const sh = (px, py) => [px + (y + h - py) * slant, py];
+  const s = t * 1.3;
+  const cxv = x + s / 2;
+  const cyv = y + h - s / 2;
+  const pts = [
+    [cxv - s / 2, cyv - s / 2], [cxv + s / 2, cyv - s / 2],
+    [cxv + s / 2, cyv + s / 2], [cxv - s / 2, cyv + s / 2],
+  ];
+  ctx.beginPath();
+  pts.forEach((p, i) => {
     const [sx, sy] = sh(p[0], p[1]);
     if (i === 0) ctx.moveTo(sx, sy);
     else ctx.lineTo(sx, sy);
@@ -214,6 +243,7 @@ function segMeasure(chars, dh) {
   for (const ch of chars) {
     if (ch === " ") adv.push(grp);
     else if (ch === "'") adv.push(ap);
+    else if (ch === ".") adv.push(dh * 0.24);
     else adv.push(dw);
   }
   const total = adv.reduce((s, a) => s + a + sep, 0) - sep;
@@ -221,14 +251,159 @@ function segMeasure(chars, dh) {
 }
 
 // draw the whole databack string (fills current ctx.fillStyle)
-function drawSegString(ctx, x, y, chars, dh) {
+function drawSegString(ctx, x, y, chars, dh, slant = DB_SLANT) {
   const { adv, dw, sep } = segMeasure(chars, dh);
   const t = Math.max(2, dh * 0.13);
   let cx = x;
   chars.split("").forEach((ch, i) => {
-    if (ch >= "0" && ch <= "9") drawSegDigit(ctx, cx, y, dw, dh, ch, t);
-    else if (ch === "'") drawSegApos(ctx, cx, y, dh, t);
+    if (ch >= "0" && ch <= "9") drawSegDigit(ctx, cx, y, dw, dh, ch, t, slant);
+    else if (ch === "'") drawSegApos(ctx, cx, y, dh, t, slant);
+    else if (ch === ".") drawSegDot(ctx, cx, y, dh, t, slant);
     cx += adv[i] + sep;
+  });
+}
+
+// rounded-rect path helper (native roundRect when available, else manual arcs)
+function roundRectPath(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  if (ctx.roundRect) {
+    ctx.roundRect(x, y, w, h, r);
+    return;
+  }
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+// ---------- LCD status panel (mimics a camera's small monochrome LCD) ----------
+// Etched labels (ISO / mm / F / 1/) are drawn as small monospace text; numeric
+// values use the upright 7-segment glyphs with faint "ghost" segments behind.
+// measure=true returns the block width without drawing.
+function lcdBlock(ctx, x, y, dh, ink, prefix, digits, suffix, measure) {
+  const labelSize = Math.max(8, Math.round(dh * 0.5));
+  const gap = dh * 0.12;
+  ctx.font = `700 ${labelSize}px "Courier New", monospace`;
+  const preW = prefix ? ctx.measureText(prefix).width + gap : 0;
+  const sufW = suffix ? ctx.measureText(suffix).width + gap : 0;
+  const segW = digits ? segMeasure(digits, dh).total : 0;
+  const total = preW + segW + sufW;
+  if (measure) return total;
+
+  let cx = x;
+  ctx.fillStyle = ink;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+  if (prefix) {
+    ctx.fillText(prefix, cx, y + dh);
+    cx += preW;
+  }
+  if (digits) {
+    ctx.save();
+    ctx.globalAlpha = 0.1; // ghost of the unlit segments
+    drawSegString(ctx, cx, y, digits.replace(/[0-9]/g, "8"), dh, 0);
+    ctx.restore();
+    drawSegString(ctx, cx, y, digits, dh, 0);
+    cx += segW;
+  }
+  if (suffix) {
+    ctx.font = `700 ${labelSize}px "Courier New", monospace`;
+    ctx.fillStyle = ink;
+    ctx.fillText(suffix, cx + gap, y + dh);
+  }
+  return total;
+}
+
+function drawLcdPanel(ctx, canvasW, canvasH, drawW, exif) {
+  if (!exif) return;
+
+  const apt = exif.FNumber != null ? exif.FNumber.toFixed(1) : null;
+  const iso = exif.ISO != null ? String(exif.ISO) : null;
+  const focal = exif.FocalLength != null ? String(Math.round(exif.FocalLength)) : null;
+  const date = fmtDatabackDate(exif.DateTimeOriginal);
+
+  let shutPre = null, shutDigits = null, shutSuf = null;
+  const et = exif.ExposureTime;
+  if (et != null && et > 0) {
+    if (et < 1) {
+      shutPre = "1/";
+      shutDigits = String(Math.round(1 / et));
+    } else {
+      shutDigits = et % 1 === 0 ? String(et) : et.toFixed(1);
+      shutSuf = '"';
+    }
+  }
+
+  const dhBig = Math.max(14, Math.round(drawW * 0.034));
+  const dhMid = Math.max(11, Math.round(drawW * 0.026));
+  const dhSmall = Math.max(10, Math.round(drawW * 0.022));
+
+  const rows = [];
+  const r1left = shutDigits ? { p: shutPre, d: shutDigits, s: shutSuf } : null;
+  const r1right = apt ? { p: "F", d: apt, s: null } : null;
+  if (r1left || r1right) rows.push({ h: dhBig, left: r1left, right: r1right });
+
+  const r2left = iso ? { p: "ISO", d: iso, s: null } : null;
+  const r2right = focal ? { p: null, d: focal, s: "mm" } : null;
+  if (r2left || r2right) rows.push({ h: dhMid, left: r2left, right: r2right });
+
+  if (date) rows.push({ h: dhSmall, left: { p: null, d: date, s: null }, right: null });
+
+  if (!rows.length) return;
+
+  const colGap = dhBig * 1.1;
+  const rowGap = dhBig * 0.55;
+  const innerPad = dhBig * 0.55;
+  const bezel = Math.max(3, dhBig * 0.16);
+
+  const mW = (blk, dh) => (blk ? lcdBlock(ctx, 0, 0, dh, "#000", blk.p, blk.d, blk.s, true) : 0);
+  let contentW = 0;
+  const rowMeas = rows.map((row) => {
+    const lw = mW(row.left, row.h);
+    const rw = mW(row.right, row.h);
+    const w = row.left && row.right ? lw + colGap + rw : Math.max(lw, rw);
+    contentW = Math.max(contentW, w);
+    return { lw, rw, w };
+  });
+
+  const rowsH = rows.reduce((s, r) => s + r.h, 0) + rowGap * (rows.length - 1);
+  const panelW = contentW + innerPad * 2 + bezel * 2;
+  const panelH = rowsH + innerPad * 2 + bezel * 2;
+
+  const inset = Math.round(drawW * 0.045);
+  const px = inset;
+  const py = canvasH - inset - panelH;
+
+  // bezel + backlit LCD background
+  ctx.save();
+  roundRectPath(ctx, px, py, panelW, panelH, bezel * 1.4);
+  ctx.fillStyle = "#2b2e28";
+  ctx.fill();
+
+  const lx = px + bezel, ly = py + bezel;
+  const lw2 = panelW - bezel * 2, lh2 = panelH - bezel * 2;
+  const grad = ctx.createLinearGradient(0, ly, 0, ly + lh2);
+  grad.addColorStop(0, "#bccbaf");
+  grad.addColorStop(1, "#a4b596");
+  roundRectPath(ctx, lx, ly, lw2, lh2, bezel);
+  ctx.fillStyle = grad;
+  ctx.fill();
+  ctx.restore();
+
+  const ink = "rgba(26,31,22,0.9)";
+  const cx0 = lx + innerPad;
+  const contentRight = lx + innerPad + contentW;
+  let ry = ly + innerPad;
+  rows.forEach((row, i) => {
+    const m = rowMeas[i];
+    if (row.left) lcdBlock(ctx, cx0, ry, row.h, ink, row.left.p, row.left.d, row.left.s, false);
+    if (row.right) {
+      const rx = contentRight - m.rw;
+      lcdBlock(ctx, rx, ry, row.h, ink, row.right.p, row.right.d, row.right.s, false);
+    }
+    ry += row.h + rowGap;
   });
 }
 
@@ -477,6 +652,9 @@ export default function ExifFrameApp() {
         }
         ctx.restore();
       }
+    } else if (frameStyle === "lcd") {
+      // small camera-style LCD status panel overlaid on the image
+      drawLcdPanel(ctx, canvasW, canvasH, drawW, exif);
     } else {
       // text block in the bottom area (below the image)
       const fontSize = Math.max(14, Math.round(drawW * 0.02));
