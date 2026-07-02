@@ -279,43 +279,10 @@ function roundRectPath(ctx, x, y, w, h, r) {
 }
 
 // ---------- LCD status panel (mimics a camera's small monochrome LCD) ----------
-// Etched labels (ISO / mm / F / 1/) are drawn as small monospace text; numeric
-// values use the upright 7-segment glyphs with faint "ghost" segments behind.
-// measure=true returns the block width without drawing.
-function lcdBlock(ctx, x, y, dh, ink, prefix, digits, suffix, measure) {
-  const labelSize = Math.max(8, Math.round(dh * 0.5));
-  const gap = dh * 0.12;
-  ctx.font = `700 ${labelSize}px "Courier New", monospace`;
-  const preW = prefix ? ctx.measureText(prefix).width + gap : 0;
-  const sufW = suffix ? ctx.measureText(suffix).width + gap : 0;
-  const segW = digits ? segMeasure(digits, dh).total : 0;
-  const total = preW + segW + sufW;
-  if (measure) return total;
-
-  let cx = x;
-  ctx.fillStyle = ink;
-  ctx.textAlign = "left";
-  ctx.textBaseline = "alphabetic";
-  if (prefix) {
-    ctx.fillText(prefix, cx, y + dh);
-    cx += preW;
-  }
-  if (digits) {
-    ctx.save();
-    ctx.globalAlpha = 0.1; // ghost of the unlit segments
-    drawSegString(ctx, cx, y, digits.replace(/[0-9]/g, "8"), dh, 0);
-    ctx.restore();
-    drawSegString(ctx, cx, y, digits, dh, 0);
-    cx += segW;
-  }
-  if (suffix) {
-    ctx.font = `700 ${labelSize}px "Courier New", monospace`;
-    ctx.fillStyle = ink;
-    ctx.fillText(suffix, cx + gap, y + dh);
-  }
-  return total;
-}
-
+// Canon-style top LCD: warm amber reflective backlight with dark etched
+// segments/labels, boxed indicators, a metering-circle icon and an
+// exposure-comp scale. Uses real EXIF for shutter/aperture/ISO/focal/date;
+// AWB, the metering ring and the scale needle are fixed decorative signifiers.
 function drawLcdPanel(ctx, canvasW, canvasH, drawW, exif) {
   if (!exif) return;
 
@@ -323,88 +290,152 @@ function drawLcdPanel(ctx, canvasW, canvasH, drawW, exif) {
   const iso = exif.ISO != null ? String(exif.ISO) : null;
   const focal = exif.FocalLength != null ? String(Math.round(exif.FocalLength)) : null;
   const date = fmtDatabackDate(exif.DateTimeOriginal);
-
-  let shutPre = null, shutDigits = null, shutSuf = null;
   const et = exif.ExposureTime;
+  let shut = null, shutSuf = "";
   if (et != null && et > 0) {
-    if (et < 1) {
-      shutPre = "1/";
-      shutDigits = String(Math.round(1 / et));
-    } else {
-      shutDigits = et % 1 === 0 ? String(et) : et.toFixed(1);
-      shutSuf = '"';
-    }
+    if (et < 1) shut = String(Math.round(1 / et)); // Canon shows the denominator
+    else { shut = et % 1 === 0 ? String(et) : et.toFixed(1); shutSuf = '"'; }
   }
 
-  const dhBig = Math.max(14, Math.round(drawW * 0.034));
-  const dhMid = Math.max(11, Math.round(drawW * 0.026));
-  const dhSmall = Math.max(10, Math.round(drawW * 0.022));
+  // geometry (panel ~half the image width, sitting bottom-left)
+  const Pw = Math.round(drawW * 0.5);
+  const bezel = Math.max(4, Math.round(Pw * 0.02));
+  const pad = Math.round(Pw * 0.055);
+  const ix = 0, iw = Pw - (bezel + pad) * 2; // content coords are panel-relative below
 
-  const rows = [];
-  const r1left = shutDigits ? { p: shutPre, d: shutDigits, s: shutSuf } : null;
-  const r1right = apt ? { p: "F", d: apt, s: null } : null;
-  if (r1left || r1right) rows.push({ h: dhBig, left: r1left, right: r1right });
+  const dhShut = Math.round(Pw * 0.17);
+  const dhApt = Math.round(Pw * 0.135);
+  const dhIso = Math.round(Pw * 0.115);
+  const dhDate = Math.round(Pw * 0.07);
+  const smLab = Math.round(Pw * 0.05);
+  const hInd = Math.round(dhShut * 0.42);
+  const hScale = Math.round(Pw * 0.055);
+  const g = Math.round(Pw * 0.04);
 
-  const r2left = iso ? { p: "ISO", d: iso, s: null } : null;
-  const r2right = focal ? { p: null, d: focal, s: "mm" } : null;
-  if (r2left || r2right) rows.push({ h: dhMid, left: r2left, right: r2right });
-
-  if (date) rows.push({ h: dhSmall, left: { p: null, d: date, s: null }, right: null });
-
-  if (!rows.length) return;
-
-  const colGap = dhBig * 1.1;
-  const rowGap = dhBig * 0.55;
-  const innerPad = dhBig * 0.55;
-  const bezel = Math.max(3, dhBig * 0.16);
-
-  const mW = (blk, dh) => (blk ? lcdBlock(ctx, 0, 0, dh, "#000", blk.p, blk.d, blk.s, true) : 0);
-  let contentW = 0;
-  const rowMeas = rows.map((row) => {
-    const lw = mW(row.left, row.h);
-    const rw = mW(row.right, row.h);
-    const w = row.left && row.right ? lw + colGap + rw : Math.max(lw, rw);
-    contentW = Math.max(contentW, w);
-    return { lw, rw, w };
-  });
-
-  const rowsH = rows.reduce((s, r) => s + r.h, 0) + rowGap * (rows.length - 1);
-  const panelW = contentW + innerPad * 2 + bezel * 2;
-  const panelH = rowsH + innerPad * 2 + bezel * 2;
+  const contentH = hInd + g + dhShut + g + dhIso + g + hScale + g + dhDate;
+  const Ph = contentH + (bezel + pad) * 2;
 
   const inset = Math.round(drawW * 0.045);
   const px = inset;
-  const py = canvasH - inset - panelH;
+  const py = canvasH - inset - Ph;
 
-  // bezel + backlit LCD background
-  ctx.save();
-  roundRectPath(ctx, px, py, panelW, panelH, bezel * 1.4);
-  ctx.fillStyle = "#2b2e28";
+  // bezel
+  roundRectPath(ctx, px, py, Pw, Ph, bezel * 1.6);
+  ctx.fillStyle = "#17150f";
   ctx.fill();
-
-  const lx = px + bezel, ly = py + bezel;
-  const lw2 = panelW - bezel * 2, lh2 = panelH - bezel * 2;
-  const grad = ctx.createLinearGradient(0, ly, 0, ly + lh2);
-  grad.addColorStop(0, "#bccbaf");
-  grad.addColorStop(1, "#a4b596");
-  roundRectPath(ctx, lx, ly, lw2, lh2, bezel);
+  // amber backlight
+  const bx = px + bezel, by = py + bezel, bw = Pw - bezel * 2, bh = Ph - bezel * 2;
+  const grad = ctx.createLinearGradient(0, by, 0, by + bh);
+  grad.addColorStop(0, "#d3c294");
+  grad.addColorStop(0.55, "#c3b17f");
+  grad.addColorStop(1, "#ab9865");
+  roundRectPath(ctx, bx, by, bw, bh, bezel);
   ctx.fillStyle = grad;
   ctx.fill();
-  ctx.restore();
 
-  const ink = "rgba(26,31,22,0.9)";
-  const cx0 = lx + innerPad;
-  const contentRight = lx + innerPad + contentW;
-  let ry = ly + innerPad;
-  rows.forEach((row, i) => {
-    const m = rowMeas[i];
-    if (row.left) lcdBlock(ctx, cx0, ry, row.h, ink, row.left.p, row.left.d, row.left.s, false);
-    if (row.right) {
-      const rx = contentRight - m.rw;
-      lcdBlock(ctx, rx, ry, row.h, ink, row.right.p, row.right.d, row.right.s, false);
+  const ink = "rgba(52,47,33,0.92)";
+  const ox = px + bezel + pad; // content origin x
+  const oy = py + bezel + pad; // content origin y
+  const right = ox + iw;
+
+  // --- helpers (panel-local) ---
+  const seg = (x, y, dh, str, align = "left", ghost = true) => {
+    const w = segMeasure(str, dh).total;
+    const sx = align === "right" ? x - w : x;
+    if (ghost) {
+      ctx.save();
+      ctx.globalAlpha = 0.09;
+      ctx.fillStyle = ink;
+      drawSegString(ctx, sx, y, str.replace(/[0-9]/g, "8"), dh, 0);
+      ctx.restore();
     }
-    ry += row.h + rowGap;
-  });
+    ctx.fillStyle = ink;
+    drawSegString(ctx, sx, y, str, dh, 0);
+    return w;
+  };
+  const txt = (x, y, s, size, align = "left", baseline = "alphabetic") => {
+    ctx.font = `700 ${size}px "Courier New", monospace`;
+    ctx.fillStyle = ink;
+    ctx.textAlign = align;
+    ctx.textBaseline = baseline;
+    ctx.fillText(s, x, y);
+    const w = ctx.measureText(s).width;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
+    return w;
+  };
+  const box = (x, y, s, size) => {
+    ctx.font = `700 ${size}px "Courier New", monospace`;
+    const tw = ctx.measureText(s).width;
+    const padx = size * 0.4, pady = size * 0.3;
+    const w = tw + padx * 2, h = size + pady * 2;
+    ctx.lineWidth = Math.max(1.5, size * 0.12);
+    ctx.strokeStyle = ink;
+    roundRectPath(ctx, x, y, w, h, size * 0.28);
+    ctx.stroke();
+    txt(x + padx, y + h / 2, s, size, "left", "middle");
+    return { w, h };
+  };
+
+  // --- indicator row: AWB box (left) + metering-circle icon (right) ---
+  box(ox, oy, "AWB", smLab);
+  const mr = hInd * 0.5;
+  const mcx = right - mr, mcy = oy + hInd * 0.5;
+  ctx.strokeStyle = ink;
+  ctx.lineWidth = Math.max(1.5, mr * 0.16);
+  ctx.beginPath(); ctx.arc(mcx, mcy, mr, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = ink;
+  ctx.beginPath(); ctx.arc(mcx, mcy, mr * 0.42, 0, Math.PI * 2); ctx.fill();
+  // partial inner ring to echo Canon's center-weighted mark
+  ctx.beginPath(); ctx.arc(mcx, mcy, mr * 0.66, -0.4, Math.PI * 0.9); ctx.stroke();
+
+  // --- big row: shutter (left), aperture (right) ---
+  const yBig = oy + hInd + g;
+  const baseBig = yBig + dhShut;
+  let cx = ox;
+  if (shut) {
+    cx += seg(cx, yBig, dhShut, shut);
+    if (shutSuf) txt(cx + smLab * 0.2, baseBig, shutSuf, smLab * 1.3);
+  }
+  if (apt) {
+    const aptW = segMeasure(apt, dhApt).total;
+    const aptX = right - aptW;
+    seg(aptX, baseBig - dhApt, dhApt, apt);
+    txt(aptX - smLab * 0.3, baseBig, "F", smLab * 1.15, "right");
+  }
+
+  // --- ISO row: ISO value (left), focal length (right) ---
+  const yIso = yBig + dhShut + g;
+  const baseIso = yIso + dhIso;
+  if (iso) {
+    const lw = txt(ox, baseIso, "ISO", smLab, "left");
+    seg(ox + lw + smLab * 0.5, yIso, dhIso, iso);
+  }
+  if (focal) {
+    const mmW = txt(right, baseIso, "mm", smLab, "right");
+    seg(right - mmW - smLab * 0.4, baseIso - dhIso, dhIso, focal, "right");
+  }
+
+  // --- exposure-comp scale (decorative): -3 . . 2 . . 1 . . 0 . . 1 . . 2 . . 3 ---
+  const yScale = yIso + dhIso + g + hScale * 0.5;
+  const n = 13; // 6 stops * 2 + center
+  const step = iw / (n - 1);
+  ctx.fillStyle = ink;
+  for (let i = 0; i < n; i++) {
+    const dx = ox + i * step;
+    const major = i % 2 === 0;
+    const r = major ? Math.max(1.5, hScale * 0.1) : Math.max(1, hScale * 0.06);
+    ctx.beginPath(); ctx.arc(dx, yScale, r, 0, Math.PI * 2); ctx.fill();
+  }
+  txt(ox, yScale + hScale * 0.95, "-3", smLab * 0.8, "left");
+  txt(right, yScale + hScale * 0.95, "+3", smLab * 0.8, "right");
+  // needle at center (0 EV)
+  const ncx = ox + iw / 2;
+  ctx.fillRect(ncx - Math.max(1.5, hScale * 0.08), yScale - hScale * 0.55, Math.max(3, hScale * 0.16), hScale * 1.1);
+
+  // --- date row ---
+  const yDate = yScale + hScale * 0.5 + g;
+  if (date) seg(ox, yDate, dhDate, date, "left", false);
 }
 
 // EXIF "YYYY:MM:DD ..." -> "'YY MM DD" databack format
@@ -617,32 +648,35 @@ export default function ExifFrameApp() {
         sctx.fillStyle = "#ffffff";
         drawSegString(sctx, x0, y0, dstr, dh);
 
-        // additive glow: composite the stamp several times, blurred + tinted.
-        // "lighter" = additive, so it reads as burned light on dark areas.
-        ctx.save();
-        ctx.globalCompositeOperation = "lighter";
-
-        const layers = [
-          { blur: dh * 0.5, color: "rgba(255,74,18,0.45)" }, // wide soft halo
-          { blur: dh * 0.14, color: "rgba(255,74,18,0.75)" }, // tight halo
-          { blur: 0, color: "rgba(255,120,50,0.95)" }, // hot core
-        ];
-        for (const L of layers) {
-          ctx.save();
-          ctx.filter = L.blur > 0 ? `blur(${L.blur}px)` : "none";
-          // tint the white stamp: draw it, then multiply by color via a temp canvas
+        // tint the white stamp shape with `color`, optionally blurred, and
+        // paint it onto ctx using the current composite mode.
+        const drawTinted = (color, blur) => {
           const tinted = document.createElement("canvas");
           tinted.width = canvasW;
           tinted.height = canvasH;
           const tctx = tinted.getContext("2d");
           tctx.drawImage(stamp, 0, 0);
           tctx.globalCompositeOperation = "source-in";
-          tctx.fillStyle = L.color;
+          tctx.fillStyle = color;
           tctx.fillRect(0, 0, canvasW, canvasH);
+          ctx.save();
+          ctx.filter = blur > 0 ? `blur(${blur}px)` : "none";
           ctx.drawImage(tinted, 0, 0);
           ctx.restore();
-        }
+        };
+
+        // Halos: additive ("lighter") so they read as burned light on dark
+        // scenes. On bright scenes they add little — harmless.
+        ctx.save();
+        ctx.globalCompositeOperation = "lighter";
+        drawTinted("rgba(255,74,18,0.45)", dh * 0.5); // wide soft halo
+        drawTinted("rgba(255,74,18,0.75)", dh * 0.14); // tight halo
         ctx.restore();
+
+        // Hot core: normal compositing with a solid orange-red so the date
+        // always reads as orange-red. (Pure additive clips to white on bright
+        // backgrounds, which is what made the stamp look white.)
+        drawTinted("rgb(255,78,28)", 0);
       }
     } else if (frameStyle === "lcd") {
       // small camera-style LCD status panel overlaid on the image
