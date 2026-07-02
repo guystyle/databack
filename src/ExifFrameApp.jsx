@@ -418,7 +418,6 @@ function fmtDatabackDate(v) {
 export default function ExifFrameApp() {
   const [imgEl, setImgEl] = useState(null);
   const [exif, setExif] = useState(null);
-  const [orientation, setOrientation] = useState(1);
   const [frameStyle, setFrameStyle] = useState("film");
   const [caption, setCaption] = useState("");
   const [fields, setFields] = useState({
@@ -464,13 +463,16 @@ export default function ExifFrameApp() {
     } catch (err) {
       parsed = null;
     }
-    const orient = parsed?.Orientation || 1;
 
     // 2) Decode robustly. createImageBitmap handles MPO and very large files
     //    more reliably than <img>, especially on mobile. Fall back to <img>.
+    //    imageOrientation:"from-image" lets the browser bake the EXIF
+    //    orientation into the pixels, so decoded dimensions are already
+    //    upright and we never rotate manually (avoids double-rotation). The
+    //    <img> fallback auto-applies orientation the same way by default.
     let srcW = 0, srcH = 0, drawable = null;
     try {
-      const bitmap = await createImageBitmap(file, { imageOrientation: "none" });
+      const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
       srcW = bitmap.width;
       srcH = bitmap.height;
       drawable = bitmap;
@@ -526,7 +528,6 @@ export default function ExifFrameApp() {
       const finalImg = new Image();
       finalImg.onload = () => {
         setExif(parsed);
-        setOrientation(orient);
         setError(null);
         setImgEl(finalImg);
       };
@@ -551,12 +552,10 @@ export default function ExifFrameApp() {
     const ctx = canvas.getContext("2d");
     const style = STYLES[frameStyle];
 
-    // account for EXIF orientation rotation
-    const rotate90 = orientation === 6 || orientation === 8;
-    const iw = imgEl.naturalWidth;
-    const ih = imgEl.naturalHeight;
-    const drawW = rotate90 ? ih : iw;
-    const drawH = rotate90 ? iw : ih;
+    // Pixels are already upright (orientation baked in at decode time), so the
+    // frame just uses the image's own dimensions — no rotation needed here.
+    const drawW = imgEl.naturalWidth;
+    const drawH = imgEl.naturalHeight;
 
     const border = style.border;
     const bottomExtra = style.bottomExtra;
@@ -571,14 +570,8 @@ export default function ExifFrameApp() {
       ctx.fillRect(0, 0, canvasW, canvasH);
     }
 
-    // draw rotated image into the frame area
-    ctx.save();
-    ctx.translate(border + drawW / 2, border + drawH / 2);
-    if (orientation === 6) ctx.rotate(Math.PI / 2);
-    else if (orientation === 8) ctx.rotate(-Math.PI / 2);
-    else if (orientation === 3) ctx.rotate(Math.PI);
-    ctx.drawImage(imgEl, -iw / 2, -ih / 2, iw, ih);
-    ctx.restore();
+    // draw the image into the frame area
+    ctx.drawImage(imgEl, border, border, drawW, drawH);
 
     // build text lines from enabled fields
     const lines = [];
@@ -668,7 +661,7 @@ export default function ExifFrameApp() {
         y += (idx === 0 ? fontSize : labelFontSize + 2) * 1.5;
       });
     }
-  }, [imgEl, exif, orientation, frameStyle, fields, caption]);
+  }, [imgEl, exif, frameStyle, fields, caption]);
 
   useEffect(() => {
     draw();

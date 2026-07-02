@@ -81,25 +81,20 @@ Pillow는 screen 블렌드, canvas는 lighter(가산) 합성 — 원리는 비�
 
 ## 미해결 이슈 (Claude Code에서 최우선으로 볼 것)
 
-### 1. [열림] 세로 사진이 가로로 눕는 문제 ⚠️ 최우선
-- 세로로 찍은 사진이 UI에서 가로로 눕혀져 보임.
-- **원인 미확정**. 추정 후보:
-  - (a) 자동 축소 시 정규화 JPEG를 다시 만들 때 EXIF Orientation 태그가 유실되는데
-        (canvas.toDataURL은 EXIF를 안 붙임), draw()는 원본에서 읽은 orientation을 여전히 적용 → 정합성 문제.
-  - (b) `createImageBitmap(file, {imageOrientation:"none"})`로 회전 안 하게 했는데,
-        카메라가 픽셀을 이미 세로로 저장 + Orientation 태그도 세팅한 경우 이중 회전/역회전 가능.
-  - (c) Canon은 기종에 따라 "가로픽셀+회전태그" vs "세로픽셀+정상태그"가 섞임.
-- **반드시 실제로 눕는 세로 사진 1장을 받아서** 픽셀 방향 + Orientation 태그값을 확인한 뒤 고칠 것.
-  추측으로 고치면 멀쩡한 가로 사진까지 돌아감.
-- 관련 코드: `handleFile`의 축소/정규화 로직, `draw()`의 orientation 회전 (rotate 6/8/3 분기).
+### 1. [수정됨] 세로 사진이 가로로 눕는 문제
+- 원인: 이중 회전. 디코더가 EXIF Orientation을 이미 적용(픽셀을 세로로)했는데
+  draw()가 같은 태그로 또 회전시켜 결국 눕혀짐.
+- 수정: `createImageBitmap(file, {imageOrientation:"from-image"})`로 디코드 시점에
+  방향을 픽셀에 굽고, draw()의 수동 회전(rotate 6/8/3)과 `orientation` state를 제거.
+  `<img>` 폴백도 기본값(from-image)으로 자동 정방향이라 동일하게 동작.
+- 검증: Orientation=6 태그를 넣은 JPEG를 새 디코드 경로에 통과시켜 200×400(세로) +
+  색 배치(위=빨강, 아래=파랑, 초록 마커=오른쪽 가장자리)로 정방향 확인 완료.
+  단, **실기기(특히 iOS Safari)에서 실제 세로 사진으로 최종 확인 권장.**
 
-### 2. [부분수정] 모바일 저장 버튼
-- 원래 `<a download>`가 iOS Safari에서 무시돼서 안 눌렸음.
-- 현재: 모바일이면 결과를 전체화면 오버레이로 띄워 롱프레스 저장 유도 (`savedUrl` state).
-  데스크톱은 기존 다운로드.
-- **단, 이 문제의 상당 부분은 클로드 아티팩트 iframe 샌드박스 제약이었을 가능성이 큼.**
-  Vercel 실배포 후 실제 모바일 브라우저에서 다시 검증할 것. 어쩌면 평범한 `<a download>`로도
-  충분할 수 있음. 실환경 확인 후 오버레이 방식이 불필요하면 단순화 고려.
+### 2. [수정됨] 모바일 저장 버튼
+- 임시로 넣었던 전체화면 롱프레스 저장 오버레이(`savedUrl`)를 제거.
+- 현재 데스크톱/모바일 모두 평범한 `<a download>`(`triggerDownload`) 사용.
+- iOS Safari가 실배포에서도 `<a download>`를 무시하면 그때 대응 방식 재논의.
 
 ### 3. [알려진 제약] HEIC 미지원
 - 아이폰 기본 HEIC는 브라우저가 디코드/EXIF 파싱 불가.
