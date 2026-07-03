@@ -1,5 +1,5 @@
-import React, { useState, useRef, useEffect, useCallback } from "react";
-import { Upload, Download, Camera, Aperture, Clock, Gauge } from "lucide-react";
+import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { Upload, Download } from "lucide-react";
 
 // ---------- EXIF PARSER (hand-rolled, no external deps) ----------
 // Covers baseline TIFF/EXIF tags in standard-JPEG APP1 segments.
@@ -453,6 +453,65 @@ function cameraNameOf(exif) {
   return make || model || "";
 }
 
+// ---------- editable metadata ----------
+// The parsed EXIF seeds an editable model (string fields), so missing or
+// wrong values can be typed in by hand and still reach every frame style.
+const EMPTY_META = { camera: "", lens: "", focal: "", fnumber: "", shutter: "", iso: "", date: "" };
+
+function metaFromExif(p) {
+  if (!p) return { ...EMPTY_META };
+  const dm = (p.DateTimeOriginal || "").match(/(\d{4}):(\d{2}):(\d{2})/);
+  const et = p.ExposureTime;
+  return {
+    camera: cameraNameOf(p),
+    lens: p.LensModel || "",
+    focal: p.FocalLength != null ? String(Math.round(p.FocalLength * 10) / 10) : "",
+    fnumber: p.FNumber != null ? String(Math.round(p.FNumber * 10) / 10) : "",
+    shutter: et != null && et > 0 ? (et < 1 ? `1/${Math.round(1 / et)}` : String(et)) : "",
+    iso: p.ISO != null ? String(p.ISO) : "",
+    date: dm ? `${dm[1]}-${dm[2]}-${dm[3]}` : "",
+  };
+}
+
+// Back-convert the editable strings into the numeric EXIF shape the frame
+// renderers consume. Returns null when every field is blank.
+function exifFromMeta(meta) {
+  const num = (s) => {
+    const v = parseFloat(s);
+    return Number.isFinite(v) ? v : null;
+  };
+  const shutterOf = (s) => {
+    const t = s.trim();
+    if (!t) return null;
+    const frac = t.match(/^1\s*\/\s*(\d+(?:\.\d+)?)$/);
+    if (frac) return 1 / parseFloat(frac[1]);
+    const v = parseFloat(t);
+    return Number.isFinite(v) && v > 0 ? v : null;
+  };
+  const dateOf = (s) => {
+    const m = s.trim().match(/^(\d{4})[-./: ](\d{1,2})[-./: ](\d{1,2})/);
+    if (!m) return null;
+    return `${m[1]}:${m[2].padStart(2, "0")}:${m[3].padStart(2, "0")} 00:00:00`;
+  };
+  const hasAny = Object.values(meta).some((v) => v && v.trim());
+  if (!hasAny) return null;
+  return {
+    Make: "",
+    Model: meta.camera.trim(),
+    LensModel: meta.lens.trim() || null,
+    FocalLength: num(meta.focal),
+    FNumber: num(meta.fnumber),
+    ExposureTime: shutterOf(meta.shutter),
+    ISO: meta.iso.trim() ? parseInt(meta.iso, 10) || null : null,
+    DateTimeOriginal: dateOf(meta.date),
+  };
+}
+
+// aspect-ratio padding for export (fit, never crop) — 9:16 = Instagram story
+const RATIOS = { free: null, "1:1": 1, "4:5": 4 / 5, "9:16": 9 / 16 };
+// letterbox color per style, matched to each frame's own base
+const PAD_BG = { film: "#141009", polaroid: "#efe9dc", databack: "#000000", lcd: "#000000" };
+
 // ---------- 35mm film-strip frame ----------
 // Dark film base with sprocket-hole rows top & bottom and orange film
 // edge-printing (camera / frame no. / settings / date) in the inner lanes.
@@ -523,11 +582,38 @@ function drawFilmStrip(ctx, canvas, drawW, drawH, imgEl, exif, fields, caption) 
   ctx.textAlign = "left";
 }
 
+const INPUT_STYLE = {
+  flex: 1,
+  minWidth: 0,
+  boxSizing: "border-box",
+  padding: "7px 10px",
+  fontSize: 12,
+  fontFamily: "'Courier New', monospace",
+  borderRadius: 4,
+  border: "1px solid #2b2824",
+  background: "#141210",
+  color: "#e8e2d5",
+  colorScheme: "dark",
+};
+
+function MetaField({ label, value, onChange, placeholder, type }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <span style={{ width: 58, flexShrink: 0, fontSize: 10, letterSpacing: 1, color: "#8a8577" }}>{label}</span>
+      <input type={type || "text"} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder || ""} style={INPUT_STYLE} />
+    </div>
+  );
+}
+
 export default function ExifFrameApp() {
   const [imgEl, setImgEl] = useState(null);
-  const [exif, setExif] = useState(null);
+  const [exif, setExif] = useState(null); // parsed original (null = none found)
+  const [meta, setMeta] = useState(EMPTY_META); // editable copy driving the render
   const [frameStyle, setFrameStyle] = useState("film");
   const [caption, setCaption] = useState("");
+  const [ratio, setRatio] = useState("free");
+  const [format, setFormat] = useState("jpeg");
+  const [quality, setQuality] = useState(95);
   const [fields, setFields] = useState({
     camera: true,
     lens: true,
@@ -537,6 +623,9 @@ export default function ExifFrameApp() {
   const [error, setError] = useState(null);
   const [fileName, setFileName] = useState("");
   const canvasRef = useRef(null);
+
+  // effective EXIF: whatever is in the editable fields right now
+  const fx = useMemo(() => exifFromMeta(meta), [meta]);
 
   const handleFile = useCallback(async (file) => {
     if (!file) return;
@@ -636,6 +725,7 @@ export default function ExifFrameApp() {
       const finalImg = new Image();
       finalImg.onload = () => {
         setExif(parsed);
+        setMeta(metaFromExif(parsed));
         setError(null);
         setImgEl(finalImg);
       };
@@ -657,7 +747,6 @@ export default function ExifFrameApp() {
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas || !imgEl) return;
-    const ctx = canvas.getContext("2d");
     const style = STYLES[frameStyle];
 
     // Pixels are already upright (orientation baked in at decode time), so the
@@ -665,120 +754,125 @@ export default function ExifFrameApp() {
     const drawW = imgEl.naturalWidth;
     const drawH = imgEl.naturalHeight;
 
-    // film uses its own strip geometry (sprocket bands top & bottom)
+    // 1) render the styled result into an offscreen content canvas, so the
+    //    aspect-ratio padding can be composed around it afterwards
+    const content = document.createElement("canvas");
+    const ctx = content.getContext("2d");
+
     if (frameStyle === "film") {
-      drawFilmStrip(ctx, canvas, drawW, drawH, imgEl, exif, fields, caption);
-      return;
-    }
-
-    const border = style.border;
-    const bottomExtra = style.bottomExtra;
-    const canvasW = drawW + border * 2;
-    const canvasH = drawH + border * 2 + bottomExtra;
-    canvas.width = canvasW;
-    canvas.height = canvasH;
-
-    // background
-    if (style.bg) {
-      ctx.fillStyle = style.bg;
-      ctx.fillRect(0, 0, canvasW, canvasH);
-    }
-
-    // draw the image into the frame area
-    ctx.drawImage(imgEl, border, border, drawW, drawH);
-
-    // build text lines from enabled fields
-    const lines = [];
-    if (fields.camera && exif && (exif.Make || exif.Model)) {
-      const make = (exif.Make || "").trim();
-      const model = (exif.Model || "").trim();
-      let cameraName;
-      if (make && model) {
-        cameraName = model.toLowerCase().startsWith(make.toLowerCase()) ? model : `${make} ${model}`;
-      } else {
-        cameraName = make || model;
-      }
-      if (cameraName) lines.push(cameraName.toUpperCase());
-    }
-    if (fields.lens && exif?.LensModel) {
-      lines.push(exif.LensModel);
-    }
-    if (fields.settings && exif) {
-      const parts = [fmtFocal(exif.FocalLength), fmtFNumber(exif.FNumber), fmtExposure(exif.ExposureTime), fmtISO(exif.ISO)].filter(Boolean);
-      if (parts.length) lines.push(parts.join("  ·  "));
-    }
-    if (fields.date && exif?.DateTimeOriginal) {
-      lines.push(fmtDate(exif.DateTimeOriginal));
-    }
-    if (caption.trim()) lines.push(caption.trim().toUpperCase());
-
-    if (frameStyle === "databack") {
-      // authentic film databack: '26-format date, 7-segment italic glyphs,
-      // deep orange light burned into the frame (additive glow, no shadow)
-      const dstr = fmtDatabackDate(exif?.DateTimeOriginal);
-      if (dstr) {
-        const dh = Math.max(12, Math.round(drawW * 0.024)); // small
-        const pad = Math.round(drawW * 0.085); // inset from edge
-        const { total } = segMeasure(dstr, dh);
-        const x0 = canvasW - pad - total;
-        const y0 = canvasH - pad - dh;
-
-        // render the stamp shape once on an offscreen canvas (white on transparent)
-        const stamp = document.createElement("canvas");
-        stamp.width = canvasW;
-        stamp.height = canvasH;
-        const sctx = stamp.getContext("2d");
-        sctx.fillStyle = "#ffffff";
-        drawSegString(sctx, x0, y0, dstr, dh);
-
-        // tint the white stamp shape with `color`, optionally blurred, and
-        // paint it onto ctx using the current composite mode.
-        const drawTinted = (color, blur) => {
-          const tinted = document.createElement("canvas");
-          tinted.width = canvasW;
-          tinted.height = canvasH;
-          const tctx = tinted.getContext("2d");
-          tctx.drawImage(stamp, 0, 0);
-          tctx.globalCompositeOperation = "source-in";
-          tctx.fillStyle = color;
-          tctx.fillRect(0, 0, canvasW, canvasH);
-          ctx.save();
-          ctx.filter = blur > 0 ? `blur(${blur}px)` : "none";
-          ctx.drawImage(tinted, 0, 0);
-          ctx.restore();
-        };
-
-        // Halos: additive ("lighter") so they read as burned light on dark
-        // scenes. On bright scenes they add little — harmless.
-        ctx.save();
-        ctx.globalCompositeOperation = "lighter";
-        drawTinted("rgba(255,74,18,0.45)", dh * 0.5); // wide soft halo
-        drawTinted("rgba(255,74,18,0.75)", dh * 0.14); // tight halo
-        ctx.restore();
-
-        // Hot core: normal compositing with a solid orange-red so the date
-        // always reads as orange-red. (Pure additive clips to white on bright
-        // backgrounds, which is what made the stamp look white.)
-        drawTinted("rgb(255,78,28)", 0);
-      }
-    } else if (frameStyle === "lcd") {
-      // small camera-style LCD status panel overlaid on the image
-      drawLcdPanel(ctx, canvasW, canvasH, drawW, exif);
+      // film uses its own strip geometry (sprocket bands top & bottom)
+      drawFilmStrip(ctx, content, drawW, drawH, imgEl, fx, fields, caption);
     } else {
-      // text block in the bottom area (below the image)
-      const fontSize = Math.max(14, Math.round(drawW * 0.02));
-      const labelFontSize = Math.max(11, Math.round(fontSize * 0.62));
-      let y = border + drawH + fontSize * 1.4;
+      const border = style.border;
+      const bottomExtra = style.bottomExtra;
+      const canvasW = drawW + border * 2;
+      const canvasH = drawH + border * 2 + bottomExtra;
+      content.width = canvasW;
+      content.height = canvasH;
 
-      ctx.textAlign = "left";
-      lines.forEach((line, idx) => {
-        ctx.font = idx === 0 ? `700 ${fontSize}px "Courier New", monospace` : `400 ${labelFontSize + 2}px "Courier New", monospace`;
-        ctx.fillStyle = idx === 0 ? style.textColor : style.labelColor;
-        ctx.fillText(line, border, y);
-        y += (idx === 0 ? fontSize : labelFontSize + 2) * 1.5;
-      });
+      // background
+      if (style.bg) {
+        ctx.fillStyle = style.bg;
+        ctx.fillRect(0, 0, canvasW, canvasH);
+      }
+
+      // draw the image into the frame area
+      ctx.drawImage(imgEl, border, border, drawW, drawH);
+
+      if (frameStyle === "databack") {
+        // authentic film databack: '26-format date, 7-segment italic glyphs,
+        // deep orange light burned into the frame (additive glow, no shadow)
+        const dstr = fmtDatabackDate(fx?.DateTimeOriginal);
+        if (dstr) {
+          const dh = Math.max(12, Math.round(drawW * 0.024)); // small
+          const pad = Math.round(drawW * 0.085); // inset from edge
+          const { total } = segMeasure(dstr, dh);
+          const x0 = canvasW - pad - total;
+          const y0 = canvasH - pad - dh;
+
+          // render the stamp shape once on an offscreen canvas (white on transparent)
+          const stamp = document.createElement("canvas");
+          stamp.width = canvasW;
+          stamp.height = canvasH;
+          const sctx = stamp.getContext("2d");
+          sctx.fillStyle = "#ffffff";
+          drawSegString(sctx, x0, y0, dstr, dh);
+
+          // tint the white stamp shape with `color`, optionally blurred, and
+          // paint it onto ctx using the current composite mode.
+          const drawTinted = (color, blur) => {
+            const tinted = document.createElement("canvas");
+            tinted.width = canvasW;
+            tinted.height = canvasH;
+            const tctx = tinted.getContext("2d");
+            tctx.drawImage(stamp, 0, 0);
+            tctx.globalCompositeOperation = "source-in";
+            tctx.fillStyle = color;
+            tctx.fillRect(0, 0, canvasW, canvasH);
+            ctx.save();
+            ctx.filter = blur > 0 ? `blur(${blur}px)` : "none";
+            ctx.drawImage(tinted, 0, 0);
+            ctx.restore();
+          };
+
+          // Halos: additive ("lighter") so they read as burned light on dark
+          // scenes. On bright scenes they add little — harmless.
+          ctx.save();
+          ctx.globalCompositeOperation = "lighter";
+          drawTinted("rgba(255,74,18,0.45)", dh * 0.5); // wide soft halo
+          drawTinted("rgba(255,74,18,0.75)", dh * 0.14); // tight halo
+          ctx.restore();
+
+          // Hot core: normal compositing with a solid orange-red so the date
+          // always reads as orange-red. (Pure additive clips to white on bright
+          // backgrounds, which is what made the stamp look white.)
+          drawTinted("rgb(255,78,28)", 0);
+        }
+      } else if (frameStyle === "lcd") {
+        // small camera-style LCD status panel overlaid on the image
+        drawLcdPanel(ctx, canvasW, canvasH, drawW, fx);
+      } else {
+        // polaroid: text block in the bottom area (below the image)
+        const lines = [];
+        const cam = cameraNameOf(fx);
+        if (fields.camera && cam) lines.push(cam.toUpperCase());
+        if (fields.lens && fx?.LensModel) lines.push(fx.LensModel);
+        if (fields.settings && fx) {
+          const parts = [fmtFocal(fx.FocalLength), fmtFNumber(fx.FNumber), fmtExposure(fx.ExposureTime), fmtISO(fx.ISO)].filter(Boolean);
+          if (parts.length) lines.push(parts.join("  ·  "));
+        }
+        if (fields.date && fx?.DateTimeOriginal) lines.push(fmtDate(fx.DateTimeOriginal));
+        if (caption.trim()) lines.push(caption.trim().toUpperCase());
+
+        const fontSize = Math.max(14, Math.round(drawW * 0.02));
+        const labelFontSize = Math.max(11, Math.round(fontSize * 0.62));
+        let y = border + drawH + fontSize * 1.4;
+
+        ctx.textAlign = "left";
+        lines.forEach((line, idx) => {
+          ctx.font = idx === 0 ? `700 ${fontSize}px "Courier New", monospace` : `400 ${labelFontSize + 2}px "Courier New", monospace`;
+          ctx.fillStyle = idx === 0 ? style.textColor : style.labelColor;
+          ctx.fillText(line, border, y);
+          y += (idx === 0 ? fontSize : labelFontSize + 2) * 1.5;
+        });
+      }
     }
-  }, [imgEl, exif, frameStyle, fields, caption]);
+
+    // 2) compose onto the visible canvas, letterboxed to the selected ratio
+    const target = RATIOS[ratio];
+    let outW = content.width;
+    let outH = content.height;
+    if (target) {
+      if (outW / outH > target) outH = Math.round(outW / target);
+      else outW = Math.round(outH * target);
+    }
+    canvas.width = outW;
+    canvas.height = outH;
+    const fctx = canvas.getContext("2d");
+    fctx.fillStyle = PAD_BG[frameStyle] || "#000000";
+    fctx.fillRect(0, 0, outW, outH);
+    fctx.drawImage(content, Math.round((outW - content.width) / 2), Math.round((outH - content.height) / 2));
+  }, [imgEl, fx, frameStyle, fields, caption, ratio]);
 
   useEffect(() => {
     draw();
@@ -788,26 +882,33 @@ export default function ExifFrameApp() {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const filename = `${fileName || "photo"}_framed.png`;
+    const jpeg = format === "jpeg";
+    const mime = jpeg ? "image/jpeg" : "image/png";
+    const q = jpeg ? quality / 100 : undefined;
+    const filename = `${fileName || "photo"}_${frameStyle}.${jpeg ? "jpg" : "png"}`;
 
     // toBlob can return null on mobile if the canvas is too large / low memory.
-    canvas.toBlob((blob) => {
-      if (!blob) {
-        // fallback: try a data URL directly
-        try {
-          triggerDownload(canvas.toDataURL("image/png"), filename);
-        } catch (err) {
-          setError(
-            "이미지를 저장용으로 만드는 데 실패했어요. 사진이 너무 큰 것 같아요. 다른 사진으로 시도하거나, 화면을 캡처해 저장해주세요."
-          );
+    canvas.toBlob(
+      (blob) => {
+        if (!blob) {
+          // fallback: try a data URL directly
+          try {
+            triggerDownload(canvas.toDataURL(mime, q), filename);
+          } catch (err) {
+            setError(
+              "이미지를 저장용으로 만드는 데 실패했어요. 사진이 너무 큰 것 같아요. 다른 사진으로 시도하거나, 화면을 캡처해 저장해주세요."
+            );
+          }
+          return;
         }
-        return;
-      }
-      const url = URL.createObjectURL(blob);
-      triggerDownload(url, filename);
-      // revoke later so the browser has time to start the download
-      setTimeout(() => URL.revokeObjectURL(url), 60000);
-    }, "image/png");
+        const url = URL.createObjectURL(blob);
+        triggerDownload(url, filename);
+        // revoke later so the browser has time to start the download
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
+      },
+      mime,
+      q
+    );
   };
 
   const triggerDownload = (url, filename) => {
@@ -819,23 +920,11 @@ export default function ExifFrameApp() {
     document.body.removeChild(a);
   };
 
-  const exifRows = exif
-    ? [
-        { icon: Camera, label: "Camera", value: (() => {
-            const make = (exif.Make || "").trim();
-            const model = (exif.Model || "").trim();
-            if (make && model) return model.toLowerCase().startsWith(make.toLowerCase()) ? model : `${make} ${model}`;
-            return make || model || "—";
-          })() },
-        { icon: Aperture, label: "Lens", value: exif.LensModel || "—" },
-        {
-          icon: Gauge,
-          label: "Settings",
-          value: [fmtFocal(exif.FocalLength), fmtFNumber(exif.FNumber), fmtExposure(exif.ExposureTime), fmtISO(exif.ISO)].filter(Boolean).join(" · ") || "—",
-        },
-        { icon: Clock, label: "Date", value: fmtDate(exif.DateTimeOriginal) || "—" },
-      ]
-    : [];
+  const setMetaField = (key) => (value) => setMeta((m) => ({ ...m, [key]: value }));
+
+  // databack/lcd render fixed layouts from the metadata; the toggles and
+  // caption only affect the text-based frames
+  const usesTextOptions = frameStyle === "film" || frameStyle === "polaroid";
 
   return (
     <div style={{ minHeight: "100vh", background: "#141210", color: "#e8e2d5", fontFamily: "'Courier New', monospace", padding: "24px 16px" }}>
@@ -878,18 +967,25 @@ export default function ExifFrameApp() {
               <canvas ref={canvasRef} style={{ width: "100%", display: "block", background: "#0d0c0a" }} />
             </div>
 
-            {/* exif readout */}
-            <div style={{ background: "#1c1a17", borderRadius: 4, padding: 14, marginBottom: 16, fontSize: 12 }}>
-              {exif ? (
-                exifRows.map((r) => (
-                  <div key={r.label} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", color: "#c9c3b4" }}>
-                    <span style={{ color: "#8a8577" }}>{r.label}</span>
-                    <span>{r.value}</span>
-                  </div>
-                ))
-              ) : (
-                <div style={{ color: "#8a8577" }}>이 파일에서 EXIF 정보를 찾지 못했어요. (편집/캡처된 이미지이거나 정보가 제거됐을 수 있어요)</div>
+            {/* editable metadata */}
+            <div style={{ background: "#1c1a17", borderRadius: 4, padding: 14, marginBottom: 16 }}>
+              <div style={{ fontSize: 11, letterSpacing: 2, color: "#8a8577", marginBottom: 10 }}>METADATA (수정 가능)</div>
+              {!exif && (
+                <div style={{ color: "#8a8577", fontSize: 12, lineHeight: 1.5, marginBottom: 10 }}>
+                  이 파일에서 EXIF를 찾지 못했어요. 아래에 직접 입력하면 각인에 사용돼요.
+                </div>
               )}
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <MetaField label="CAMERA" value={meta.camera} onChange={setMetaField("camera")} placeholder="예: Canon PowerShot V1" />
+                <MetaField label="LENS" value={meta.lens} onChange={setMetaField("lens")} placeholder="(선택)" />
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  <MetaField label="MM" value={meta.focal} onChange={setMetaField("focal")} placeholder="12" />
+                  <MetaField label="F" value={meta.fnumber} onChange={setMetaField("fnumber")} placeholder="5.0" />
+                  <MetaField label="SHUTTER" value={meta.shutter} onChange={setMetaField("shutter")} placeholder="1/1600" />
+                  <MetaField label="ISO" value={meta.iso} onChange={setMetaField("iso")} placeholder="100" />
+                </div>
+                <MetaField label="DATE" value={meta.date} onChange={setMetaField("date")} type="date" />
+              </div>
             </div>
 
             {/* frame style picker */}
@@ -917,49 +1013,115 @@ export default function ExifFrameApp() {
               </div>
             </div>
 
-            {/* field toggles */}
+            {/* field toggles + caption — only for the text-based frames */}
+            {usesTextOptions && (
+              <>
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ fontSize: 11, letterSpacing: 2, color: "#8a8577", marginBottom: 8 }}>SHOW FIELDS</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    {Object.entries({ camera: "Camera", lens: "Lens", settings: "Settings", date: "Date" }).map(([key, label]) => (
+                      <button
+                        key={key}
+                        onClick={() => setFields((f) => ({ ...f, [key]: !f[key] }))}
+                        style={{
+                          padding: "6px 12px",
+                          fontSize: 11,
+                          borderRadius: 20,
+                          border: "1px solid " + (fields[key] ? "#c4581f" : "#2b2824"),
+                          background: fields[key] ? "#2b2416" : "transparent",
+                          color: fields[key] ? "#c4581f" : "#8a8577",
+                          cursor: "pointer",
+                        }}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ fontSize: 11, letterSpacing: 2, color: "#8a8577", marginBottom: 8 }}>CAPTION (선택)</div>
+                  <input
+                    value={caption}
+                    onChange={(e) => setCaption(e.target.value)}
+                    placeholder="예: COSTA DE CAPARICA, PT"
+                    style={{
+                      width: "100%",
+                      boxSizing: "border-box",
+                      padding: "10px 12px",
+                      fontSize: 13,
+                      fontFamily: "'Courier New', monospace",
+                      borderRadius: 4,
+                      border: "1px solid #2b2824",
+                      background: "#1c1a17",
+                      color: "#e8e2d5",
+                    }}
+                  />
+                </div>
+              </>
+            )}
+
+            {/* aspect ratio (letterbox, no crop) */}
             <div style={{ marginBottom: 16 }}>
-              <div style={{ fontSize: 11, letterSpacing: 2, color: "#8a8577", marginBottom: 8 }}>SHOW FIELDS</div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                {Object.entries({ camera: "Camera", lens: "Lens", settings: "Settings", date: "Date" }).map(([key, label]) => (
+              <div style={{ fontSize: 11, letterSpacing: 2, color: "#8a8577", marginBottom: 8 }}>RATIO — 9:16 = 인스타 스토리</div>
+              <div style={{ display: "flex", gap: 8 }}>
+                {Object.keys(RATIOS).map((key) => (
                   <button
                     key={key}
-                    onClick={() => setFields((f) => ({ ...f, [key]: !f[key] }))}
+                    onClick={() => setRatio(key)}
                     style={{
-                      padding: "6px 12px",
-                      fontSize: 11,
-                      borderRadius: 20,
-                      border: "1px solid " + (fields[key] ? "#c4581f" : "#2b2824"),
-                      background: fields[key] ? "#2b2416" : "transparent",
-                      color: fields[key] ? "#c4581f" : "#8a8577",
+                      flex: 1,
+                      padding: "8px 6px",
+                      fontSize: 12,
+                      borderRadius: 4,
+                      border: ratio === key ? "1px solid #c4581f" : "1px solid #2b2824",
+                      background: ratio === key ? "#2b2416" : "transparent",
+                      color: ratio === key ? "#c4581f" : "#8a8577",
                       cursor: "pointer",
                     }}
                   >
-                    {label}
+                    {key === "free" ? "Free" : key}
                   </button>
                 ))}
               </div>
             </div>
 
-            {/* caption */}
+            {/* export format + quality */}
             <div style={{ marginBottom: 20 }}>
-              <div style={{ fontSize: 11, letterSpacing: 2, color: "#8a8577", marginBottom: 8 }}>CAPTION (선택)</div>
-              <input
-                value={caption}
-                onChange={(e) => setCaption(e.target.value)}
-                placeholder="예: COSTA DE CAPARICA, PT"
-                style={{
-                  width: "100%",
-                  boxSizing: "border-box",
-                  padding: "10px 12px",
-                  fontSize: 13,
-                  fontFamily: "'Courier New', monospace",
-                  borderRadius: 4,
-                  border: "1px solid #2b2824",
-                  background: "#1c1a17",
-                  color: "#e8e2d5",
-                }}
-              />
+              <div style={{ fontSize: 11, letterSpacing: 2, color: "#8a8577", marginBottom: 8 }}>EXPORT</div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                {["jpeg", "png"].map((key) => (
+                  <button
+                    key={key}
+                    onClick={() => setFormat(key)}
+                    style={{
+                      padding: "8px 14px",
+                      fontSize: 12,
+                      borderRadius: 4,
+                      border: format === key ? "1px solid #c4581f" : "1px solid #2b2824",
+                      background: format === key ? "#2b2416" : "transparent",
+                      color: format === key ? "#c4581f" : "#8a8577",
+                      cursor: "pointer",
+                    }}
+                  >
+                    {key.toUpperCase()}
+                  </button>
+                ))}
+                {format === "jpeg" && (
+                  <>
+                    <input
+                      type="range"
+                      min={60}
+                      max={100}
+                      step={5}
+                      value={quality}
+                      onChange={(e) => setQuality(Number(e.target.value))}
+                      style={{ flex: 1, accentColor: "#c4581f" }}
+                    />
+                    <span style={{ fontSize: 12, color: "#8a8577", width: 28, textAlign: "right" }}>{quality}</span>
+                  </>
+                )}
+              </div>
             </div>
 
             <div style={{ display: "flex", gap: 8 }}>
@@ -981,12 +1143,13 @@ export default function ExifFrameApp() {
                   gap: 6,
                 }}
               >
-                <Download size={15} /> PNG 저장
+                <Download size={15} /> {format === "jpeg" ? "JPG" : "PNG"} 저장
               </button>
               <button
                 onClick={() => {
                   setImgEl(null);
                   setExif(null);
+                  setMeta(EMPTY_META);
                   setCaption("");
                 }}
                 style={{
