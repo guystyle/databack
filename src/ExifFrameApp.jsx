@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
-import { Upload, Download } from "lucide-react";
+import { Upload, Download, Share2 } from "lucide-react";
 
 // ---------- EXIF PARSER (hand-rolled, no external deps) ----------
 // Covers baseline TIFF/EXIF tags in standard-JPEG APP1 segments.
@@ -512,6 +512,16 @@ const RATIOS = { free: null, "1:1": 1, "4:5": 4 / 5, "9:16": 9 / 16 };
 // letterbox color per style, matched to each frame's own base
 const PAD_BG = { film: "#141009", polaroid: "#efe9dc", databack: "#000000", lcd: "#000000" };
 
+// persisted preferences (style/ratio/export choices survive reloads)
+const SETTINGS_KEY = "databack:settings";
+const SAVED = (() => {
+  try {
+    return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {};
+  } catch (e) {
+    return {};
+  }
+})();
+
 // ---------- 35mm film-strip frame ----------
 // Dark film base with sprocket-hole rows top & bottom and orange film
 // edge-printing (camera / frame no. / settings / date) in the inner lanes.
@@ -609,23 +619,37 @@ export default function ExifFrameApp() {
   const [imgEl, setImgEl] = useState(null);
   const [exif, setExif] = useState(null); // parsed original (null = none found)
   const [meta, setMeta] = useState(EMPTY_META); // editable copy driving the render
-  const [frameStyle, setFrameStyle] = useState("film");
+  const [frameStyle, setFrameStyle] = useState(() => (STYLES[SAVED.frameStyle] ? SAVED.frameStyle : "film"));
   const [caption, setCaption] = useState("");
-  const [ratio, setRatio] = useState("free");
-  const [format, setFormat] = useState("jpeg");
-  const [quality, setQuality] = useState(95);
-  const [fields, setFields] = useState({
+  const [ratio, setRatio] = useState(() => (SAVED.ratio in RATIOS ? SAVED.ratio : "free"));
+  const [format, setFormat] = useState(() => (SAVED.format === "png" ? "png" : "jpeg"));
+  const [quality, setQuality] = useState(() => (Number.isFinite(SAVED.quality) ? Math.min(100, Math.max(60, SAVED.quality)) : 95));
+  const [fields, setFields] = useState(() => ({
     camera: true,
     lens: true,
     settings: true,
     date: true,
-  });
+    ...(typeof SAVED.fields === "object" ? SAVED.fields : null),
+  }));
   const [error, setError] = useState(null);
   const [fileName, setFileName] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [outSize, setOutSize] = useState(null); // [w, h] of the current export
   const canvasRef = useRef(null);
 
   // effective EXIF: whatever is in the editable fields right now
   const fx = useMemo(() => exifFromMeta(meta), [meta]);
+
+  // native share sheet (mobile) — lets the result go straight to Instagram
+  const canShare = typeof navigator !== "undefined" && typeof navigator.share === "function";
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify({ frameStyle, ratio, format, quality, fields }));
+    } catch (e) {
+      /* private mode etc. — settings just won't persist */
+    }
+  }, [frameStyle, ratio, format, quality, fields]);
 
   const handleFile = useCallback(async (file) => {
     if (!file) return;
@@ -645,6 +669,8 @@ export default function ExifFrameApp() {
       return;
     }
 
+    setLoading(true);
+
     // 1) Read raw bytes and parse EXIF from the ORIGINAL file (before any
     //    re-encoding, so the shooting date survives even for MPO/large files).
     let buf;
@@ -652,6 +678,7 @@ export default function ExifFrameApp() {
       buf = await file.arrayBuffer();
     } catch (err) {
       setError("파일을 읽을 수 없어요.");
+      setLoading(false);
       return;
     }
     let parsed = null;
@@ -695,12 +722,14 @@ export default function ExifFrameApp() {
         setError(
           "이 사진을 열 수 없어요. 카메라 원본이 MPO 형식이거나 파일이 손상됐을 수 있어요. 사진을 한 번 다른 앱(갤러리/사진)에서 열어 JPG로 다시 저장한 뒤 올려보세요."
         );
+        setLoading(false);
         return;
       }
     }
 
     if (!srcW || !srcH) {
       setError("사진 크기를 읽지 못했어요. 다른 사진으로 시도해주세요.");
+      setLoading(false);
       return;
     }
 
@@ -728,13 +757,18 @@ export default function ExifFrameApp() {
         setMeta(metaFromExif(parsed));
         setError(null);
         setImgEl(finalImg);
+        setLoading(false);
       };
-      finalImg.onerror = () => setError("이미지를 준비하는 중 문제가 생겼어요. 다시 시도해주세요.");
+      finalImg.onerror = () => {
+        setError("이미지를 준비하는 중 문제가 생겼어요. 다시 시도해주세요.");
+        setLoading(false);
+      };
       finalImg.src = dataUrl;
     } catch (err) {
       setError(
         "사진이 너무 커서 이 기기에서 처리할 수 없어요. 사진 크기를 줄여서(예: 화면 캡처나 리사이즈) 다시 올려주세요."
       );
+      setLoading(false);
     }
   }, []);
 
@@ -872,43 +906,70 @@ export default function ExifFrameApp() {
     fctx.fillStyle = PAD_BG[frameStyle] || "#000000";
     fctx.fillRect(0, 0, outW, outH);
     fctx.drawImage(content, Math.round((outW - content.width) / 2), Math.round((outH - content.height) / 2));
+    setOutSize([outW, outH]);
   }, [imgEl, fx, frameStyle, fields, caption, ratio]);
 
+  // small debounce keeps typing in the metadata fields smooth — a full-size
+  // canvas render per keystroke stutters on mobile
   useEffect(() => {
-    draw();
+    const t = setTimeout(draw, 80);
+    return () => clearTimeout(t);
   }, [draw]);
 
-  const handleDownload = () => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+  // paste a copied image (desktop) to load it like an upload
+  useEffect(() => {
+    const onPaste = (e) => {
+      const f = e.clipboardData?.files?.[0];
+      if (f && f.type.startsWith("image/")) handleFile(f);
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [handleFile]);
 
-    const jpeg = format === "jpeg";
-    const mime = jpeg ? "image/jpeg" : "image/png";
-    const q = jpeg ? quality / 100 : undefined;
-    const filename = `${fileName || "photo"}_${frameStyle}.${jpeg ? "jpg" : "png"}`;
+  const exportMime = format === "jpeg" ? "image/jpeg" : "image/png";
+  const exportQ = format === "jpeg" ? quality / 100 : undefined;
+  const exportName = () => `${fileName || "photo"}_${frameStyle}.${format === "jpeg" ? "jpg" : "png"}`;
 
-    // toBlob can return null on mobile if the canvas is too large / low memory.
-    canvas.toBlob(
-      (blob) => {
-        if (!blob) {
-          // fallback: try a data URL directly
-          try {
-            triggerDownload(canvas.toDataURL(mime, q), filename);
-          } catch (err) {
-            setError(
-              "이미지를 저장용으로 만드는 데 실패했어요. 사진이 너무 큰 것 같아요. 다른 사진으로 시도하거나, 화면을 캡처해 저장해주세요."
-            );
-          }
-          return;
-        }
-        const url = URL.createObjectURL(blob);
-        triggerDownload(url, filename);
-        // revoke later so the browser has time to start the download
-        setTimeout(() => URL.revokeObjectURL(url), 60000);
-      },
-      mime,
-      q
-    );
+  // toBlob can return null on mobile if the canvas is too large / low memory.
+  const exportBlob = () =>
+    new Promise((resolve, reject) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return reject(new Error("no canvas"));
+      canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("toBlob failed"))), exportMime, exportQ);
+    });
+
+  const handleDownload = async () => {
+    const filename = exportName();
+    try {
+      const blob = await exportBlob();
+      const url = URL.createObjectURL(blob);
+      triggerDownload(url, filename);
+      // revoke later so the browser has time to start the download
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (err) {
+      // fallback: try a data URL directly
+      try {
+        triggerDownload(canvasRef.current.toDataURL(exportMime, exportQ), filename);
+      } catch (err2) {
+        setError(
+          "이미지를 저장용으로 만드는 데 실패했어요. 사진이 너무 큰 것 같아요. 다른 사진으로 시도하거나, 화면을 캡처해 저장해주세요."
+        );
+      }
+    }
+  };
+
+  // native share sheet — on iOS/Android this can go straight into the
+  // Instagram story composer without a save-then-reopen detour
+  const handleShare = async () => {
+    try {
+      const blob = await exportBlob();
+      const file = new File([blob], exportName(), { type: blob.type });
+      if (navigator.canShare && !navigator.canShare({ files: [file] })) throw new Error("file sharing unsupported");
+      await navigator.share({ files: [file] });
+    } catch (err) {
+      if (err && err.name === "AbortError") return; // user closed the sheet
+      handleDownload(); // graceful fallback
+    }
   };
 
   const triggerDownload = (url, filename) => {
@@ -927,7 +988,11 @@ export default function ExifFrameApp() {
   const usesTextOptions = frameStyle === "film" || frameStyle === "polaroid";
 
   return (
-    <div style={{ minHeight: "100vh", background: "#141210", color: "#e8e2d5", fontFamily: "'Courier New', monospace", padding: "24px 16px" }}>
+    <div
+      onDrop={onDrop}
+      onDragOver={(e) => e.preventDefault()}
+      style={{ minHeight: "100vh", background: "#141210", color: "#e8e2d5", fontFamily: "'Courier New', monospace", padding: "24px 16px" }}
+    >
       <div style={{ maxWidth: 480, margin: "0 auto" }}>
         <div style={{ marginBottom: 24 }}>
           <div style={{ fontSize: 11, letterSpacing: 3, color: "#8a8577", marginBottom: 4 }}>EXIF · FRAME · TOOL</div>
@@ -953,7 +1018,7 @@ export default function ExifFrameApp() {
             }}
           >
             <Upload size={22} strokeWidth={1.5} />
-            <span style={{ fontSize: 13 }}>탭하거나 사진을 끌어다 놓으세요 (JPEG · PNG)</span>
+            <span style={{ fontSize: 13 }}>{loading ? "사진 준비 중…" : "탭하거나 사진을 끌어다 놓으세요 (JPEG · PNG)"}</span>
             <input type="file" accept="image/jpeg,image/jpg,image/png,image/*" style={{ display: "none" }} onChange={(e) => handleFile(e.target.files?.[0])} />
           </label>
         )}
@@ -963,8 +1028,12 @@ export default function ExifFrameApp() {
         {imgEl && (
           <>
             {/* canvas preview */}
-            <div style={{ border: "1px solid #2b2824", borderRadius: 4, overflow: "hidden", marginBottom: 16 }}>
+            <div style={{ border: "1px solid #2b2824", borderRadius: 4, overflow: "hidden", marginBottom: 6 }}>
               <canvas ref={canvasRef} style={{ width: "100%", display: "block", background: "#0d0c0a" }} />
+            </div>
+            <div style={{ fontSize: 10, letterSpacing: 1, color: "#8a8577", textAlign: "right", marginBottom: 12 }}>
+              {outSize ? `${outSize[0]} × ${outSize[1]} · ` : ""}
+              {format === "jpeg" ? `JPG ${quality}` : "PNG"}
             </div>
 
             {/* editable metadata */}
@@ -1145,6 +1214,28 @@ export default function ExifFrameApp() {
               >
                 <Download size={15} /> {format === "jpeg" ? "JPG" : "PNG"} 저장
               </button>
+              {canShare && (
+                <button
+                  onClick={handleShare}
+                  style={{
+                    flex: 1,
+                    padding: "12px",
+                    fontSize: 13,
+                    fontWeight: 700,
+                    borderRadius: 4,
+                    border: "1px solid #c4581f",
+                    background: "transparent",
+                    color: "#c4581f",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 6,
+                  }}
+                >
+                  <Share2 size={15} /> 공유
+                </button>
+              )}
               <button
                 onClick={() => {
                   setImgEl(null);
