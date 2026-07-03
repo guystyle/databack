@@ -69,6 +69,20 @@ exif-databack/
 - **스타일별 UI**: 필드 토글·캡션은 film/polaroid에서만 표시 (databack/lcd는 고정 레이아웃).
 - **네이티브 공유**: Web Share API 지원 시 "공유" 버튼 노출 → 파일을 공유 시트로 전달
   (모바일에서 저장 없이 인스타 스토리로 직행). 실패/미지원이면 다운로드 폴백.
+
+### 미학 개선 (2026-07)
+- **타이포그래피** (Google Fonts, index.html에서 로드. 미로딩 시 Courier 폴백):
+  - `FONT_EDGE`/`FONT_MONO` = Share Tech Mono — 필름 엣지 프린팅·LCD 라벨·UI.
+  - `FONT_HAND` = Caveat(라틴) + Nanum Pen Script(한글) — 폴라로이드 손글씨 캡션.
+  - canvas는 리플로우가 없으므로 `document.fonts.load` 완료 시 `fontsReady`로 재렌더.
+- **폴라로이드 재디자인** (`drawPolaroid`): 따뜻한 화이트 종이 그라데이션, 하단 친(chin)
+  drawW*0.18, 사진 가장자리 헤어라인+상단 그림자(움푹 들어간 느낌), 손글씨 캡션(-0.022rad
+  기울임, 캡션 없으면 날짜가 손글씨로), 친 하단에 아주 작은 메타 프린트.
+- **필름 스트립 v2**: 엣지 프린트에 같은 색 shadowBlur 이중 드로우(빛 번짐), 상단 우측
+  프레임 카운터 `▸ 24 ▸ 24A`, 카메라명 뒤 ISO 병기, 베이스에 세로 그라데이션.
+- **FILM GRAIN + VIGNETTE 토글** (`applyFilmLook`): soft-light 노이즈 그레인(alpha 0.4,
+  큰 사진은 타일 스케일업) + 라디얼 비네트(0.24). 사진 영역에만 적용, 프레임/각인엔 안 닿음.
+  설정에 저장됨(`filmLook`).
 - **설정 유지**: 스타일/비율/포맷/품질/필드 토글을 localStorage(`databack:settings`)에 저장.
 - **기타 UX**: 디코드 중 로딩 표시, 미리보기 아래 출력 해상도 표시, 이미지 로드 후에도
   페이지 아무 데나 드롭해 교체, 클립보드 이미지 붙여넣기(Ctrl+V), 메타 입력 80ms 디바운스.

@@ -129,39 +129,62 @@ function fmtDate(v) {
 
 // ---------- frame styles ----------
 const STYLES = {
-  film: {
-    label: "Film Frame",
-    bg: "#1c1a17",
-    border: 48,
-    bottomExtra: 130,
-    textColor: "#c4581f",
-    labelColor: "#8a8577",
-  },
-  polaroid: {
-    label: "Polaroid",
-    bg: "#efe9dc",
-    border: 36,
-    bottomExtra: 120,
-    textColor: "#2b2824",
-    labelColor: "#8a8577",
-  },
-  databack: {
-    label: "Data Back",
-    bg: null, // image bleeds full frame, no border
-    border: 0,
-    bottomExtra: 0,
-    textColor: "#ff5a1f",
-    labelColor: "#ff5a1f",
-  },
-  lcd: {
-    label: "LCD",
-    bg: null, // overlay panel on top of the full-bleed image
-    border: 0,
-    bottomExtra: 0,
-    textColor: "#1a1f16",
-    labelColor: "#1a1f16",
-  },
+  film: { label: "Film Frame" },
+  polaroid: { label: "Polaroid" },
+  databack: { label: "Data Back" },
+  lcd: { label: "LCD" },
 };
+
+// typography for the rendered output (loaded from Google Fonts in index.html;
+// the fallbacks keep everything legible if the webfonts never arrive)
+const FONT_EDGE = '"Share Tech Mono", "Courier New", monospace'; // machine-printed film edge code
+const FONT_HAND = '"Caveat", "Nanum Pen Script", cursive'; // marker handwriting (latin + 한글)
+const FONT_MONO = '"Share Tech Mono", "Courier New", monospace';
+
+// ---------- film look (grain + vignette) ----------
+// Subtle photographic texture applied to the photo area only, never to the
+// frames or stamps. Grain is mid-gray noise composited with soft-light.
+function applyFilmLook(ctx, x, y, w, h) {
+  const tile = 160;
+  const noise = document.createElement("canvas");
+  noise.width = tile;
+  noise.height = tile;
+  const nctx = noise.getContext("2d");
+  const id = nctx.createImageData(tile, tile);
+  for (let i = 0; i < id.data.length; i += 4) {
+    const v = 128 + (Math.random() - 0.5) * 96;
+    id.data[i] = id.data[i + 1] = id.data[i + 2] = v;
+    id.data[i + 3] = 255;
+  }
+  nctx.putImageData(id, 0, 0);
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x, y, w, h);
+  ctx.clip();
+
+  // grain — scale the tile up on large photos so it stays visible
+  ctx.save();
+  ctx.globalCompositeOperation = "soft-light";
+  ctx.globalAlpha = 0.4;
+  const s = Math.max(1, w / 1400);
+  ctx.scale(s, s);
+  ctx.fillStyle = ctx.createPattern(noise, "repeat");
+  ctx.fillRect(x / s, y / s, w / s, h / s);
+  ctx.restore();
+
+  // vignette
+  const cx = x + w / 2;
+  const cy = y + h / 2;
+  const r = Math.hypot(w, h) / 2;
+  const g = ctx.createRadialGradient(cx, cy, r * 0.55, cx, cy, r);
+  g.addColorStop(0, "rgba(0,0,0,0)");
+  g.addColorStop(1, "rgba(0,0,0,0.24)");
+  ctx.fillStyle = g;
+  ctx.fillRect(x, y, w, h);
+
+  ctx.restore();
+}
 
 // ---------- 7-segment databack renderer ----------
 const SEG = {
@@ -354,7 +377,7 @@ function drawLcdPanel(ctx, canvasW, canvasH, drawW, exif) {
     return w;
   };
   const txt = (x, y, s, size, align = "left", baseline = "alphabetic") => {
-    ctx.font = `700 ${size}px "Courier New", monospace`;
+    ctx.font = `700 ${size}px ${FONT_MONO}`;
     ctx.fillStyle = ink;
     ctx.textAlign = align;
     ctx.textBaseline = baseline;
@@ -365,7 +388,7 @@ function drawLcdPanel(ctx, canvasW, canvasH, drawW, exif) {
     return w;
   };
   const box = (x, y, s, size) => {
-    ctx.font = `700 ${size}px "Courier New", monospace`;
+    ctx.font = `700 ${size}px ${FONT_MONO}`;
     const tw = ctx.measureText(s).width;
     const padx = size * 0.4, pady = size * 0.3;
     const w = tw + padx * 2, h = size + pady * 2;
@@ -510,7 +533,7 @@ function exifFromMeta(meta) {
 // aspect-ratio padding for export (fit, never crop) — 9:16 = Instagram story
 const RATIOS = { free: null, "1:1": 1, "4:5": 4 / 5, "9:16": 9 / 16 };
 // letterbox color per style, matched to each frame's own base
-const PAD_BG = { film: "#141009", polaroid: "#efe9dc", databack: "#000000", lcd: "#000000" };
+const PAD_BG = { film: "#0f0c07", polaroid: "#f1ede2", databack: "#000000", lcd: "#000000" };
 
 // persisted preferences (style/ratio/export choices survive reloads)
 const SETTINGS_KEY = "databack:settings";
@@ -525,7 +548,8 @@ const SAVED = (() => {
 // ---------- 35mm film-strip frame ----------
 // Dark film base with sprocket-hole rows top & bottom and orange film
 // edge-printing (camera / frame no. / settings / date) in the inner lanes.
-function drawFilmStrip(ctx, canvas, drawW, drawH, imgEl, exif, fields, caption) {
+// Edge print is drawn with a soft same-color bleed like real exposed film.
+function drawFilmStrip(ctx, canvas, drawW, drawH, imgEl, exif, fields, caption, filmLook) {
   const borderX = Math.round(drawW * 0.04);
   const bandH = Math.round(drawW * 0.12);
   const canvasW = drawW + borderX * 2;
@@ -533,10 +557,15 @@ function drawFilmStrip(ctx, canvas, drawW, drawH, imgEl, exif, fields, caption) 
   canvas.width = canvasW;
   canvas.height = canvasH;
 
-  // film base + photo
-  ctx.fillStyle = "#141009";
+  // film base — slightly warmer in the middle, darker toward the edges
+  const bg = ctx.createLinearGradient(0, 0, 0, canvasH);
+  bg.addColorStop(0, "#0f0c07");
+  bg.addColorStop(0.5, "#1a150c");
+  bg.addColorStop(1, "#0f0c07");
+  ctx.fillStyle = bg;
   ctx.fillRect(0, 0, canvasW, canvasH);
   ctx.drawImage(imgEl, borderX, bandH, drawW, drawH);
+  if (filmLook) applyFilmLook(ctx, borderX, bandH, drawW, drawH);
 
   // sprocket holes fill the outer part of each band; the inner "lane"
   // (adjacent to the photo) is reserved for edge printing.
@@ -561,34 +590,107 @@ function drawFilmStrip(ctx, canvas, drawW, drawH, imgEl, exif, fields, caption) 
     ctx.fill();
   }
 
-  // orange edge printing
-  const orange = "#e0862b";
+  // orange edge printing with a light-bleed halo (burned into the emulsion)
+  const orange = "#ef9330";
   const fs = Math.max(11, Math.round(drawW * 0.019));
   const pad = borderX + Math.round(drawW * 0.012);
-  ctx.fillStyle = orange;
-  ctx.font = `700 ${fs}px "Courier New", monospace`;
+  ctx.font = `${fs}px ${FONT_EDGE}`;
   ctx.textBaseline = "alphabetic";
+  const edge = (text, x, y, align) => {
+    ctx.save();
+    ctx.textAlign = align;
+    ctx.fillStyle = orange;
+    ctx.shadowColor = "rgba(236,130,32,0.8)";
+    ctx.shadowBlur = fs * 0.4;
+    ctx.fillText(text, x, y);
+    ctx.shadowBlur = 0;
+    ctx.fillText(text, x, y);
+    ctx.restore();
+  };
 
-  // TOP lane: camera model (left) + frame number (right)
+  // TOP lane: camera model as the film branding (left) + frame counter (right)
   const topBase = bandH - Math.round(laneH * 0.3);
   const cam = cameraNameOf(exif);
-  ctx.textAlign = "left";
-  if (fields.camera && cam) ctx.fillText(cam.toUpperCase(), pad, topBase);
-  ctx.textAlign = "right";
-  ctx.fillText("▶ 24A", canvasW - pad, topBase);
+  if (fields.camera && cam) edge(`${cam.toUpperCase()}${exif?.ISO ? "  " + exif.ISO : ""}`, pad, topBase, "left");
+  edge("▸ 24  ▸ 24A", canvasW - pad, topBase, "right");
 
-  // BOTTOM lane: settings (left) + date (right)
+  // BOTTOM lane: settings (left) + date or caption (right)
   const botBase = bandH + drawH + Math.round(laneH * 0.72);
-  ctx.textAlign = "left";
   if (fields.settings && exif) {
     const parts = [fmtFocal(exif.FocalLength), fmtFNumber(exif.FNumber), fmtExposure(exif.ExposureTime), fmtISO(exif.ISO)].filter(Boolean);
-    if (parts.length) ctx.fillText(parts.join("  "), pad, botBase);
+    if (parts.length) edge(parts.join("  "), pad, botBase, "left");
   }
-  ctx.textAlign = "right";
   const dstr = fields.date ? fmtDatabackDate(exif?.DateTimeOriginal) : null;
-  if (dstr) ctx.fillText(dstr, canvasW - pad, botBase);
-  else if (caption?.trim()) ctx.fillText(caption.trim().toUpperCase(), canvasW - pad, botBase);
+  if (dstr) edge(dstr, canvasW - pad, botBase, "right");
+  else if (caption?.trim()) edge(caption.trim().toUpperCase(), canvasW - pad, botBase, "right");
+}
 
+// ---------- polaroid frame ----------
+// Warm-white instant-film paper: thin borders, wide bottom chin, a subtle
+// recessed edge around the photo, marker-handwritten caption (falls back to
+// the date), and a tiny machine-printed metadata line at the bottom.
+function drawPolaroid(ctx, canvas, drawW, drawH, imgEl, exif, fields, caption, filmLook) {
+  const bx = Math.round(drawW * 0.055);
+  const chin = Math.round(drawW * 0.18);
+  const W = drawW + bx * 2;
+  const H = bx + drawH + chin;
+  canvas.width = W;
+  canvas.height = H;
+
+  // paper with a faint vertical shade
+  const pg = ctx.createLinearGradient(0, 0, 0, H);
+  pg.addColorStop(0, "#f6f3ec");
+  pg.addColorStop(1, "#ece7d9");
+  ctx.fillStyle = pg;
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.drawImage(imgEl, bx, bx, drawW, drawH);
+  if (filmLook) applyFilmLook(ctx, bx, bx, drawW, drawH);
+
+  // recessed photo edge: hairline ring + soft shadow falling from the top
+  ctx.strokeStyle = "rgba(40,30,20,0.35)";
+  ctx.lineWidth = Math.max(1, drawW * 0.002);
+  ctx.strokeRect(bx + 0.5, bx + 0.5, drawW - 1, drawH - 1);
+  const es = Math.round(drawW * 0.014);
+  const sg = ctx.createLinearGradient(0, bx, 0, bx + es * 2);
+  sg.addColorStop(0, "rgba(0,0,0,0.16)");
+  sg.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = sg;
+  ctx.fillRect(bx, bx, drawW, es * 2);
+
+  // chin: handwritten caption (or date), slightly tilted like a real pen note
+  const chinTop = bx + drawH;
+  const handText = caption?.trim() || (fields.date && fmtDate(exif?.DateTimeOriginal)) || "";
+  if (handText) {
+    const hs = Math.round(drawW * 0.062);
+    ctx.font = `600 ${hs}px ${FONT_HAND}`;
+    ctx.fillStyle = "#41392c";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.save();
+    ctx.translate(W / 2, chinTop + chin * 0.42);
+    ctx.rotate(-0.022);
+    ctx.fillText(handText, 0, 0);
+    ctx.restore();
+  }
+
+  // tiny print at the bottom of the chin
+  const parts = [];
+  const cam = cameraNameOf(exif);
+  if (fields.camera && cam) parts.push(cam.toUpperCase());
+  if (fields.lens && exif?.LensModel) parts.push(exif.LensModel);
+  if (fields.settings && exif) {
+    const s = [fmtFocal(exif.FocalLength), fmtFNumber(exif.FNumber), fmtExposure(exif.ExposureTime), fmtISO(exif.ISO)].filter(Boolean).join(" ");
+    if (s) parts.push(s);
+  }
+  if (caption?.trim() && fields.date && exif?.DateTimeOriginal) parts.push(fmtDate(exif.DateTimeOriginal));
+  if (parts.length) {
+    ctx.font = `${Math.max(9, Math.round(drawW * 0.017))}px ${FONT_MONO}`;
+    ctx.fillStyle = "#b3ab99";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "alphabetic";
+    ctx.fillText(parts.join("  ·  "), W / 2, chinTop + chin * 0.85);
+  }
   ctx.textAlign = "left";
 }
 
@@ -598,7 +700,7 @@ const INPUT_STYLE = {
   boxSizing: "border-box",
   padding: "7px 10px",
   fontSize: 12,
-  fontFamily: "'Courier New', monospace",
+  fontFamily: '"Share Tech Mono", "Courier New", monospace',
   borderRadius: 4,
   border: "1px solid #2b2824",
   background: "#141210",
@@ -631,10 +733,12 @@ export default function ExifFrameApp() {
     date: true,
     ...(typeof SAVED.fields === "object" ? SAVED.fields : null),
   }));
+  const [filmLook, setFilmLook] = useState(() => !!SAVED.filmLook);
   const [error, setError] = useState(null);
   const [fileName, setFileName] = useState("");
   const [loading, setLoading] = useState(false);
   const [outSize, setOutSize] = useState(null); // [w, h] of the current export
+  const [fontsReady, setFontsReady] = useState(false);
   const canvasRef = useRef(null);
 
   // effective EXIF: whatever is in the editable fields right now
@@ -643,13 +747,32 @@ export default function ExifFrameApp() {
   // native share sheet (mobile) — lets the result go straight to Instagram
   const canShare = typeof navigator !== "undefined" && typeof navigator.share === "function";
 
+  // redraw once the output fonts arrive (canvas won't reflow by itself)
+  useEffect(() => {
+    if (!document.fonts?.load) {
+      setFontsReady(true);
+      return;
+    }
+    let alive = true;
+    Promise.all([
+      document.fonts.load('16px "Share Tech Mono"'),
+      document.fonts.load('16px "Caveat"'),
+      document.fonts.load('16px "Nanum Pen Script"'),
+    ])
+      .catch(() => {})
+      .then(() => alive && setFontsReady(true));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   useEffect(() => {
     try {
-      localStorage.setItem(SETTINGS_KEY, JSON.stringify({ frameStyle, ratio, format, quality, fields }));
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify({ frameStyle, ratio, format, quality, fields, filmLook }));
     } catch (e) {
       /* private mode etc. — settings just won't persist */
     }
-  }, [frameStyle, ratio, format, quality, fields]);
+  }, [frameStyle, ratio, format, quality, fields, filmLook]);
 
   const handleFile = useCallback(async (file) => {
     if (!file) return;
@@ -781,7 +904,6 @@ export default function ExifFrameApp() {
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas || !imgEl) return;
-    const style = STYLES[frameStyle];
 
     // Pixels are already upright (orientation baked in at decode time), so the
     // frame just uses the image's own dimensions — no rotation needed here.
@@ -795,23 +917,17 @@ export default function ExifFrameApp() {
 
     if (frameStyle === "film") {
       // film uses its own strip geometry (sprocket bands top & bottom)
-      drawFilmStrip(ctx, content, drawW, drawH, imgEl, fx, fields, caption);
+      drawFilmStrip(ctx, content, drawW, drawH, imgEl, fx, fields, caption, filmLook);
+    } else if (frameStyle === "polaroid") {
+      drawPolaroid(ctx, content, drawW, drawH, imgEl, fx, fields, caption, filmLook);
     } else {
-      const border = style.border;
-      const bottomExtra = style.bottomExtra;
-      const canvasW = drawW + border * 2;
-      const canvasH = drawH + border * 2 + bottomExtra;
+      // databack / lcd: full-bleed photo with an overlay
+      const canvasW = drawW;
+      const canvasH = drawH;
       content.width = canvasW;
       content.height = canvasH;
-
-      // background
-      if (style.bg) {
-        ctx.fillStyle = style.bg;
-        ctx.fillRect(0, 0, canvasW, canvasH);
-      }
-
-      // draw the image into the frame area
-      ctx.drawImage(imgEl, border, border, drawW, drawH);
+      ctx.drawImage(imgEl, 0, 0, drawW, drawH);
+      if (filmLook) applyFilmLook(ctx, 0, 0, drawW, drawH);
 
       if (frameStyle === "databack") {
         // authentic film databack: '26-format date, 7-segment italic glyphs,
@@ -865,30 +981,6 @@ export default function ExifFrameApp() {
       } else if (frameStyle === "lcd") {
         // small camera-style LCD status panel overlaid on the image
         drawLcdPanel(ctx, canvasW, canvasH, drawW, fx);
-      } else {
-        // polaroid: text block in the bottom area (below the image)
-        const lines = [];
-        const cam = cameraNameOf(fx);
-        if (fields.camera && cam) lines.push(cam.toUpperCase());
-        if (fields.lens && fx?.LensModel) lines.push(fx.LensModel);
-        if (fields.settings && fx) {
-          const parts = [fmtFocal(fx.FocalLength), fmtFNumber(fx.FNumber), fmtExposure(fx.ExposureTime), fmtISO(fx.ISO)].filter(Boolean);
-          if (parts.length) lines.push(parts.join("  ·  "));
-        }
-        if (fields.date && fx?.DateTimeOriginal) lines.push(fmtDate(fx.DateTimeOriginal));
-        if (caption.trim()) lines.push(caption.trim().toUpperCase());
-
-        const fontSize = Math.max(14, Math.round(drawW * 0.02));
-        const labelFontSize = Math.max(11, Math.round(fontSize * 0.62));
-        let y = border + drawH + fontSize * 1.4;
-
-        ctx.textAlign = "left";
-        lines.forEach((line, idx) => {
-          ctx.font = idx === 0 ? `700 ${fontSize}px "Courier New", monospace` : `400 ${labelFontSize + 2}px "Courier New", monospace`;
-          ctx.fillStyle = idx === 0 ? style.textColor : style.labelColor;
-          ctx.fillText(line, border, y);
-          y += (idx === 0 ? fontSize : labelFontSize + 2) * 1.5;
-        });
       }
     }
 
@@ -907,7 +999,7 @@ export default function ExifFrameApp() {
     fctx.fillRect(0, 0, outW, outH);
     fctx.drawImage(content, Math.round((outW - content.width) / 2), Math.round((outH - content.height) / 2));
     setOutSize([outW, outH]);
-  }, [imgEl, fx, frameStyle, fields, caption, ratio]);
+  }, [imgEl, fx, frameStyle, fields, caption, ratio, filmLook, fontsReady]);
 
   // small debounce keeps typing in the metadata fields smooth — a full-size
   // canvas render per keystroke stutters on mobile
@@ -991,7 +1083,7 @@ export default function ExifFrameApp() {
     <div
       onDrop={onDrop}
       onDragOver={(e) => e.preventDefault()}
-      style={{ minHeight: "100vh", background: "#141210", color: "#e8e2d5", fontFamily: "'Courier New', monospace", padding: "24px 16px" }}
+      style={{ minHeight: "100vh", background: "#141210", color: "#e8e2d5", fontFamily: '"Share Tech Mono", "Courier New", monospace', padding: "24px 16px" }}
     >
       <div style={{ maxWidth: 480, margin: "0 auto" }}>
         <div style={{ marginBottom: 24 }}>
@@ -1082,6 +1174,25 @@ export default function ExifFrameApp() {
               </div>
             </div>
 
+            {/* film look effect */}
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 11, letterSpacing: 2, color: "#8a8577", marginBottom: 8 }}>EFFECT</div>
+              <button
+                onClick={() => setFilmLook((v) => !v)}
+                style={{
+                  padding: "6px 12px",
+                  fontSize: 11,
+                  borderRadius: 20,
+                  border: "1px solid " + (filmLook ? "#c4581f" : "#2b2824"),
+                  background: filmLook ? "#2b2416" : "transparent",
+                  color: filmLook ? "#c4581f" : "#8a8577",
+                  cursor: "pointer",
+                }}
+              >
+                FILM GRAIN + VIGNETTE
+              </button>
+            </div>
+
             {/* field toggles + caption — only for the text-based frames */}
             {usesTextOptions && (
               <>
@@ -1119,7 +1230,7 @@ export default function ExifFrameApp() {
                       boxSizing: "border-box",
                       padding: "10px 12px",
                       fontSize: 13,
-                      fontFamily: "'Courier New', monospace",
+                      fontFamily: '"Share Tech Mono", "Courier New", monospace',
                       borderRadius: 4,
                       border: "1px solid #2b2824",
                       background: "#1c1a17",
