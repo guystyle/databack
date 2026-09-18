@@ -236,13 +236,16 @@ const SEG = {
   "5": "afgcd", "6": "afgecd", "7": "abc", "8": "abcdefg", "9": "abcdfg",
 };
 const DB_SLANT = 0.09; // italic shear (smaller = more upright)
+const DB_ONE = 0.62; // "1" cell width vs a full digit — it is only its right stem
+const DB_WEIGHT = 0.112; // segment thickness / digit height
+const DB_GAP = 0.5; // space between segment ends, in units of thickness
 
 // draw one seven-segment digit into ctx with italic shear around baseline (y+h)
 // slant defaults to the databack tuning; pass 0 for upright (LCD) glyphs.
 function drawSegDigit(ctx, x, y, w, h, ch, t, slant = DB_SLANT) {
   const segs = SEG[ch] || "";
   const midy = y + h / 2;
-  const g = t * 0.3;
+  const g = t * DB_GAP;
   const sh = (px, py) => [px + (y + h - py) * slant, py]; // shear x by height above baseline
   const poly = (pts) => {
     ctx.beginPath();
@@ -311,6 +314,7 @@ function segMeasure(chars, dh) {
     if (ch === " ") adv.push(grp);
     else if (ch === "'") adv.push(ap);
     else if (ch === ".") adv.push(dh * 0.24);
+    else if (ch === "1") adv.push(dw * DB_ONE); // a "1" is only its right-hand stem
     else adv.push(dw);
   }
   const total = adv.reduce((s, a) => s + a + sep, 0) - sep;
@@ -320,10 +324,10 @@ function segMeasure(chars, dh) {
 // draw the whole databack string (fills current ctx.fillStyle)
 function drawSegString(ctx, x, y, chars, dh, slant = DB_SLANT) {
   const { adv, dw, sep } = segMeasure(chars, dh);
-  const t = Math.max(2, dh * 0.13);
+  const t = Math.max(2, dh * DB_WEIGHT);
   let cx = x;
   chars.split("").forEach((ch, i) => {
-    if (ch >= "0" && ch <= "9") drawSegDigit(ctx, cx, y, dw, dh, ch, t, slant);
+    if (ch >= "0" && ch <= "9") drawSegDigit(ctx, cx, y, ch === "1" ? adv[i] : dw, dh, ch, t, slant);
     else if (ch === "'") drawSegApos(ctx, cx, y, dh, t, slant);
     else if (ch === ".") drawSegDot(ctx, cx, y, dh, t, slant);
     cx += adv[i] + sep;
@@ -1379,8 +1383,9 @@ export default function ExifFrameApp() {
           // scenes. On bright scenes they add little — harmless.
           ctx.save();
           ctx.globalCompositeOperation = "lighter";
-          drawTinted("rgba(255,74,18,0.45)", dh * 0.5); // wide soft halo
-          drawTinted("rgba(255,74,18,0.75)", dh * 0.14); // tight halo
+          drawTinted("rgba(255,74,18,0.30)", dh * 1.1); // outer bloom
+          drawTinted("rgba(255,74,18,0.45)", dh * 0.42); // wide soft halo
+          drawTinted("rgba(255,74,18,0.75)", dh * 0.12); // tight halo
           ctx.restore();
 
           // Hot core: normal compositing with a solid orange-red so the date
