@@ -703,31 +703,55 @@ function drawPolaroid(ctx, canvas, drawW, drawH, imgEl, exif, fields, caption, f
 // exposure line on the left and, right-aligned, the maker's logo · a divider ·
 // the body and lens names.
 //
-// The built-in logos are TYPOGRAPHIC stand-ins — the brand name set in a bold,
-// tracked grotesque — not the official trademark artwork. Uploading a
-// transparent PNG in the LOGO panel replaces the wordmark with the real thing.
+// Each brand carries the official logo artwork in public/maker (see README —
+// the files come from the GPL-3.0 yurucam/exif-frame project; the trademarks
+// belong to their makers). `text` is the fallback wordmark, used for brands
+// with no artwork on hand and whenever a PNG fails to load — a typographic
+// stand-in, not the trademark. An upload in the LOGO panel overrides both.
 const LOGO_SANS = '"Helvetica Neue", Helvetica, Arial, "Liberation Sans", sans-serif';
 
 const BRANDS = {
-  sony: { label: "SONY", text: "SONY", weight: 700, track: 0.13 },
-  canon: { label: "Canon", text: "Canon", weight: 700, track: 0.01 },
-  nikon: { label: "Nikon", text: "Nikon", weight: 700, track: 0.03 },
-  fujifilm: { label: "FUJIFILM", text: "FUJIFILM", weight: 700, track: 0.05 },
-  leica: { label: "Leica", text: "LEICA", weight: 700, track: 0.12 },
-  lumix: { label: "LUMIX", text: "LUMIX", weight: 700, track: 0.12 },
-  panasonic: { label: "Panasonic", text: "Panasonic", weight: 700, track: 0.02 },
-  olympus: { label: "OLYMPUS", text: "OLYMPUS", weight: 700, track: 0.08 },
-  omsystem: { label: "OM SYSTEM", text: "OM SYSTEM", weight: 700, track: 0.06 },
-  ricoh: { label: "RICOH", text: "RICOH", weight: 700, track: 0.1 },
-  pentax: { label: "PENTAX", text: "PENTAX", weight: 700, track: 0.1 },
-  hasselblad: { label: "HASSELBLAD", text: "HASSELBLAD", weight: 400, track: 0.14 },
-  sigma: { label: "SIGMA", text: "SIGMA", weight: 700, track: 0.13 },
-  zeiss: { label: "ZEISS", text: "ZEISS", weight: 700, track: 0.12 },
-  apple: { label: "iPhone", text: "iPhone", weight: 600, track: 0 },
-  samsung: { label: "SAMSUNG", text: "SAMSUNG", weight: 700, track: 0.08 },
-  dji: { label: "DJI", text: "DJI", weight: 700, track: 0.08 },
-  gopro: { label: "GoPro", text: "GoPro", weight: 700, track: 0 },
+  sony: { label: "SONY", logo: "sony.png", text: "SONY", weight: 700, track: 0.13 },
+  canon: { label: "Canon", logo: "canon.png", text: "Canon", weight: 700, track: 0.01 },
+  nikon: { label: "Nikon", logo: "nikon.png", text: "Nikon", weight: 700, track: 0.03 },
+  fujifilm: { label: "FUJIFILM", logo: "fujifilm.png", text: "FUJIFILM", weight: 700, track: 0.05 },
+  leica: { label: "Leica", logo: "leica.png", text: "LEICA", weight: 700, track: 0.12 },
+  lumix: { label: "LUMIX", logo: "lumix.png", text: "LUMIX", weight: 700, track: 0.12 },
+  panasonic: { label: "Panasonic", logo: "lumix.png", text: "Panasonic", weight: 700, track: 0.02 },
+  olympus: { label: "OLYMPUS", logo: "olympus.png", text: "OLYMPUS", weight: 700, track: 0.08 },
+  omsystem: { label: "OM SYSTEM", logo: "om.png", text: "OM SYSTEM", weight: 700, track: 0.06 },
+  pentax: { label: "PENTAX", logo: "pentax.png", text: "PENTAX", weight: 700, track: 0.1 },
+  ricoh: { label: "RICOH", logo: "ricoh.png", text: "RICOH", weight: 700, track: 0.1 },
+  hasselblad: { label: "HASSELBLAD", logo: "hasselblad.png", text: "HASSELBLAD", weight: 400, track: 0.14 },
+  sigma: { label: "SIGMA", logo: "sigma.png", text: "SIGMA", weight: 700, track: 0.13 },
+  contax: { label: "CONTAX", logo: "contax.png", text: "CONTAX", weight: 700, track: 0.1 },
+  mamiya: { label: "Mamiya", logo: "mamiya.png", text: "Mamiya", weight: 700, track: 0.02 },
+  phaseone: { label: "PHASE ONE", logo: "phaseone.png", text: "PHASE ONE", weight: 700, track: 0.06 },
+  epson: { label: "EPSON", logo: "epson.png", text: "EPSON", weight: 700, track: 0.08 },
+  apple: { label: "Apple", logo: "apple.png", text: "iPhone", weight: 600, track: 0 },
+  samsung: { label: "SAMSUNG", logo: "samsung.png", text: "SAMSUNG", weight: 700, track: 0.08 },
+  lg: { label: "LG", logo: "lg.png", text: "LG", weight: 700, track: 0.06 },
+  goldstar: { label: "GoldStar", logo: "goldstar.png", text: "GoldStar", weight: 700, track: 0.02 },
+  dji: { label: "DJI", logo: "dji.png", text: "DJI", weight: 700, track: 0.08 },
+  zeiss: { label: "ZEISS (워드마크)", text: "ZEISS", weight: 700, track: 0.12 },
+  gopro: { label: "GoPro (워드마크)", text: "GoPro", weight: 700, track: 0 },
 };
+
+// Artwork is fetched on demand and cached for the session. `onReady` fires when
+// a file lands (or fails) so the canvas can redraw with it.
+const logoCache = new Map();
+function brandLogoImage(file, onReady) {
+  if (!file) return null;
+  let im = logoCache.get(file);
+  if (!im) {
+    im = new Image();
+    im.onload = () => onReady?.();
+    im.onerror = () => onReady?.(); // the wordmark stands in
+    im.src = `${import.meta.env.BASE_URL || "/"}maker/${file}`;
+    logoCache.set(file, im);
+  }
+  return im;
+}
 
 // Matched in order, so the sub-brands (LUMIX, OM SYSTEM) win over their parent.
 // Kept to explicit names and unmistakable model prefixes — a bare model number
@@ -743,12 +767,18 @@ const BRAND_PATTERNS = [
   ["fujifilm", /fuji\s?film|fuji|\bgfx\b|\bx-?(pro|t|e|s|h)\d/i],
   ["leica", /leica/i],
   ["hasselblad", /hasselblad|\bx[12]d\b/i],
+  ["pentax", /pentax/i], // before RICOH — Pentax bodies report "RICOH IMAGING ... PENTAX ..."
   ["ricoh", /ricoh|\bgr\s?ii+i?\b|\bgr\s?\d\b/i],
-  ["pentax", /pentax/i],
   ["sigma", /sigma/i],
+  ["contax", /contax/i],
+  ["mamiya", /mamiya/i],
+  ["phaseone", /phase\s?one/i],
+  ["epson", /epson/i],
   ["zeiss", /zeiss/i],
   ["apple", /apple|iphone|ipad/i],
   ["samsung", /samsung|galaxy/i],
+  ["goldstar", /goldstar/i],
+  ["lg", /\blg\b|\blg-/i],
   ["dji", /\bdji\b|mavic|osmo|\bair\s?[23]s?\b/i],
   ["gopro", /gopro|hero\s?\d/i],
 ];
@@ -861,7 +891,7 @@ function drawStrap(ctx, canvas, drawW, drawH, imgEl, exif, filmLook, dateStr, lo
   let imgH = 0;
   let imgW = 0;
   if (logo?.img?.naturalWidth) {
-    imgH = cap * 1.4; // uploaded artwork usually carries its own padding
+    imgH = cap * 1.2; // artwork is tight-cropped; slightly over the cap reads right
     imgW = imgH * (logo.img.naturalWidth / logo.img.naturalHeight);
     if (imgW > logoMax) {
       imgH *= logoMax / imgW;
@@ -1001,6 +1031,7 @@ export default function ExifFrameApp() {
   );
   const [logoScale, setLogoScale] = useState(() => (LOGO_SCALES[SAVED.logoScale] ? SAVED.logoScale : "m"));
   const [logoImg, setLogoImg] = useState(null);
+  const [logoTick, setLogoTick] = useState(0); // bumped when maker artwork finishes loading
   const [error, setError] = useState(null);
   const [fileName, setFileName] = useState("");
   const [loading, setLoading] = useState(false);
@@ -1204,9 +1235,13 @@ export default function ExifFrameApp() {
     } else if (frameStyle === "strap") {
       // white card with a maker-logo bar under the photo
       const brandKey = logoBrand === "auto" ? detectBrand(cameraNameOf(fx)) : logoBrand;
+      const brand = brandKey && brandKey !== "none" ? BRANDS[brandKey] : null;
+      // an uploaded file wins; otherwise the maker's own artwork, which redraws
+      // once it has loaded; the wordmark covers the gap and any load failure
+      const art = brandLogoImage(brand?.logo, () => setLogoTick((t) => t + 1));
       drawStrap(ctx, content, drawW, drawH, imgEl, fx, filmLook, fmtStrapDateTime(fx?.DateTimeOriginal, exif?.DateTimeOriginal), {
-        img: logoBrand === "none" ? null : logoImg,
-        brand: brandKey && brandKey !== "none" ? BRANDS[brandKey] : null,
+        img: logoBrand === "none" ? null : logoImg || art,
+        brand,
         scale: logoScale,
       });
     } else {
@@ -1288,7 +1323,7 @@ export default function ExifFrameApp() {
     fctx.fillRect(0, 0, outW, outH);
     fctx.drawImage(content, Math.round((outW - content.width) / 2), Math.round((outH - content.height) / 2));
     setOutSize([outW, outH]);
-  }, [imgEl, fx, exif, frameStyle, fields, caption, ratio, filmLook, fontsReady, logoBrand, logoScale, logoImg]);
+  }, [imgEl, fx, exif, frameStyle, fields, caption, ratio, filmLook, fontsReady, logoBrand, logoScale, logoImg, logoTick]);
 
   // small debounce keeps typing in the metadata fields smooth — a full-size
   // canvas render per keystroke stutters on mobile
@@ -1572,7 +1607,7 @@ export default function ExifFrameApp() {
                   )}
                 </div>
                 <div style={{ fontSize: 10, color: "#6f6a60", lineHeight: 1.6, marginTop: 8 }}>
-                  내장 로고는 브랜드명을 워드마크로 그린 <b>근사치</b>예요. 실제 공식 로고 그대로 쓰려면 배경이 투명한 PNG를 올리세요.
+                  제조사 공식 로고를 씁니다 (ZEISS·GoPro는 아트워크가 없어 워드마크로 대체). 다른 로고를 쓰려면 배경이 투명한 PNG를 올리세요 — 업로드본이 항상 우선.
                 </div>
               </div>
             )}
