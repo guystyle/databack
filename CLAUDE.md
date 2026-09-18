@@ -47,8 +47,17 @@ exif-databack/
 
 ### EXIF 파서 (`parseExif`)
 - 외부 라이브러리 없이 JPEG APP1 세그먼트를 직접 파싱.
-- Make, Model, Orientation, LensModel, ExposureTime, FNumber, ISO, FocalLength, DateTimeOriginal 추출.
+- Make, Model, Orientation, LensMake/LensModel/LensSpecification, ExposureTime, FNumber, ISO,
+  FocalLength, DateTimeOriginal 추출.
 - GPS는 프라이버시상 의도적으로 안 뽑음.
+- **렌즈 정보 결정 순서** (`lensOf`, 2026-09): LensModel(0xa434) → 값이 없거나 `----`/`unknown`
+  같은 플레이스홀더면(`LENS_JUNK`) LensSpecification(0xa432)을 `"24-70mm F2.8-4"` 꼴로 조립
+  (`fmtLensSpec`) → LensMake(0xa433)가 있으면 앞에 붙임. 셋 다 없으면 빈칸.
+  - LensSpecification은 rational 4개짜리라 `readIFD`가 다중 컴포넌트 rational을 **배열**로
+    반환하도록 고쳤다. (기존에 읽던 태그들은 전부 count=1이라 영향 없음)
+  - **한계**: 제조사 makernote에만 렌즈명을 넣는 바디(캐논 일부 등)는 여전히 못 읽는다.
+    makernote는 벤더마다 포맷이 달라서 파서를 따로 써야 함. 일체형 렌즈 컴팩트는 애초에
+    렌즈 태그가 없는 게 정상 — 이 경우는 LENS 칸에 직접 입력.
 - **검증됨**: Canon PowerShot V1 원본에서 Python PIL과 동일한 값 확인.
   - 예: Make=Canon, Model=Canon PowerShot V1, 1/1600s, f/5, ISO100, 12mm, 2026:06:27.
   - LensModel은 렌즈 일체형이라 원래 비어있음 (파서 문제 아님).
@@ -87,6 +96,11 @@ exif-databack/
   설정에 저장됨(`filmLook`).
 - **설정 유지**: 스타일/비율/포맷/품질/필드 토글/로고 선택을 localStorage(`databack:settings`)에 저장.
   업로드한 로고는 용량이 커서 별도 키(`databack:logo`, data URL)에 저장 — 쿼터 초과해도 나머지 설정은 살아남게.
+- **모바일 폼 레이아웃** (2026-09 수정): MM/F/SPEED/ISO 2×2 그리드가 아이폰 폭(390px)에서
+  컨테이너 밖으로 114px 삐져나가던 문제. 원인은 `1fr 1fr` + **그리드 아이템 기본 `min-width:auto`**
+  — 입력의 고유 너비가 컬럼을 밀어냈다. `repeat(2, minmax(0, 1fr))` + MetaField 루트에
+  `minWidth: 0`으로 해결. 라벨은 compact 모드(52px)로 줄이고 SHUTTER → SPEED로 축약.
+  입력 글자크기는 12→16px: **16px 미만이면 iOS 사파리가 포커스 시 페이지를 확대**한다.
 - **기타 UX**: 디코드 중 로딩 표시, 미리보기 아래 출력 해상도 표시, 이미지 로드 후에도
   페이지 아무 데나 드롭해 교체, 클립보드 이미지 붙여넣기(Ctrl+V), 메타 입력 80ms 디바운스.
 

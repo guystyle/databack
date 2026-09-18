@@ -36,9 +36,18 @@ function readIFD(view, tiffStart, ifdOffset, little) {
       } else if (format === 4) {
         value = get32(valueOffset);
       } else if (format === 5 || format === 10) {
-        const num = get32(valueOffset);
-        const den = get32(valueOffset + 4);
-        value = den !== 0 ? num / den : 0;
+        // LensSpecification is four rationals; everything else we read is one
+        const one = (o) => {
+          const num = get32(o);
+          const den = get32(o + 4);
+          return den !== 0 ? num / den : 0;
+        };
+        if (numComponents > 1) {
+          value = [];
+          for (let j = 0; j < Math.min(numComponents, 4); j++) value.push(one(valueOffset + j * 8));
+        } else {
+          value = one(valueOffset);
+        }
       } else {
         value = get32(valueOffset);
       }
@@ -64,7 +73,10 @@ function parseTiff(view, tiffOffset) {
     Make: ifd0[0x010f] || null,
     Model: ifd0[0x0110] || null,
     Orientation: ifd0[0x0112] || 1,
+    LensMake: exif[0xa433] || null,
     LensModel: exif[0xa434] || null,
+    // [min focal, max focal, min F at min focal, max F at max focal]
+    LensSpec: Array.isArray(exif[0xa432]) ? exif[0xa432] : null,
     ExposureTime: exif[0x829a] ?? null,
     FNumber: exif[0x829d] ?? null,
     ISO: exif[0x8827] ?? null,
@@ -119,6 +131,37 @@ function fmtISO(v) {
   if (v === null || v === undefined) return null;
   return `ISO ${v}`;
 }
+// Not every camera writes LensModel — compacts, phones and some bodies leave it
+// out and only fill LensSpecification. Turn that into "24-70mm F2.8-4".
+function fmtLensSpec(spec) {
+  if (!Array.isArray(spec) || spec.length < 2) return null;
+  const n = (v) => (Number.isFinite(v) && v > 0 ? v : 0);
+  const [f1, f2, a1, a2] = [n(spec[0]), n(spec[1]), n(spec[2]), n(spec[3])];
+  if (!f1 && !f2) return null;
+  const r = (v) => String(Math.round(v * 10) / 10);
+  const lo = f1 || f2;
+  const hi = f2 || f1;
+  const focal = Math.abs(hi - lo) < 0.1 ? `${r(lo)}mm` : `${r(lo)}-${r(hi)}mm`;
+  if (!a1 && !a2) return focal;
+  const alo = a1 || a2;
+  const ahi = a2 || a1;
+  const ap = Math.abs(ahi - alo) < 0.05 ? `F${r(alo)}` : `F${r(alo)}-${r(ahi)}`;
+  return `${focal} ${ap}`;
+}
+
+// Cameras that have nothing to say here write placeholders rather than omitting
+// the tag, and those read worse than a blank field.
+const LENS_JUNK = /^(-+|unknown|n\/?a|none|null|0(\.0)?|standard)$/i;
+
+function lensOf(p) {
+  const model = (p?.LensModel || "").trim();
+  if (model && !LENS_JUNK.test(model)) return model;
+  const spec = fmtLensSpec(p?.LensSpec);
+  if (!spec) return "";
+  const make = (p?.LensMake || "").trim();
+  return make && !LENS_JUNK.test(make) ? `${make} ${spec}` : spec;
+}
+
 function fmtDate(v) {
   if (!v) return null;
   // EXIF format: "YYYY:MM:DD HH:MM:SS"
@@ -488,7 +531,7 @@ function metaFromExif(p) {
   const et = p.ExposureTime;
   return {
     camera: cameraNameOf(p),
-    lens: p.LensModel || "",
+    lens: lensOf(p),
     focal: p.FocalLength != null ? String(Math.round(p.FocalLength * 10) / 10) : "",
     fnumber: p.FNumber != null ? String(Math.round(p.FNumber * 10) / 10) : "",
     shutter: et != null && et > 0 ? (et < 1 ? `1/${Math.round(1 / et)}` : String(et)) : "",
@@ -1025,7 +1068,7 @@ const INPUT_STYLE = {
   minWidth: 0,
   boxSizing: "border-box",
   padding: "7px 10px",
-  fontSize: 12,
+  fontSize: 16, // < 16px makes iOS Safari zoom the page when the field is focused
   fontFamily: '"Share Tech Mono", "Courier New", monospace',
   borderRadius: 4,
   border: "1px solid #2b2824",
@@ -1034,10 +1077,13 @@ const INPUT_STYLE = {
   colorScheme: "dark",
 };
 
-function MetaField({ label, value, onChange, placeholder, type }) {
+// `compact` is for the 2-up grid, where a full-width label leaves the input too
+// narrow on a phone. minWidth:0 is load-bearing: a grid item defaults to
+// min-width:auto, so without it the input's intrinsic width overflows the column.
+function MetaField({ label, value, onChange, placeholder, type, compact }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-      <span style={{ width: 58, flexShrink: 0, fontSize: 10, letterSpacing: 1, color: "#8a8577" }}>{label}</span>
+    <div style={{ display: "flex", alignItems: "center", gap: compact ? 6 : 8, minWidth: 0 }}>
+      <span style={{ width: compact ? 52 : 58, flexShrink: 0, fontSize: 10, letterSpacing: compact ? 0.5 : 1, color: "#8a8577" }}>{label}</span>
       <input type={type || "text"} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder || ""} style={INPUT_STYLE} />
     </div>
   );
@@ -1537,11 +1583,11 @@ export default function ExifFrameApp() {
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 <MetaField label="CAMERA" value={meta.camera} onChange={setMetaField("camera")} placeholder="예: Canon PowerShot V1" />
                 <MetaField label="LENS" value={meta.lens} onChange={setMetaField("lens")} placeholder="(선택)" />
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                  <MetaField label="MM" value={meta.focal} onChange={setMetaField("focal")} placeholder="12" />
-                  <MetaField label="F" value={meta.fnumber} onChange={setMetaField("fnumber")} placeholder="5.0" />
-                  <MetaField label="SHUTTER" value={meta.shutter} onChange={setMetaField("shutter")} placeholder="1/1600" />
-                  <MetaField label="ISO" value={meta.iso} onChange={setMetaField("iso")} placeholder="100" />
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
+                  <MetaField compact label="MM" value={meta.focal} onChange={setMetaField("focal")} placeholder="12" />
+                  <MetaField compact label="F" value={meta.fnumber} onChange={setMetaField("fnumber")} placeholder="5.0" />
+                  <MetaField compact label="SPEED" value={meta.shutter} onChange={setMetaField("shutter")} placeholder="1/1600" />
+                  <MetaField compact label="ISO" value={meta.iso} onChange={setMetaField("iso")} placeholder="100" />
                 </div>
                 <MetaField label="DATE" value={meta.date} onChange={setMetaField("date")} type="date" />
               </div>
@@ -1734,7 +1780,7 @@ export default function ExifFrameApp() {
                       width: "100%",
                       boxSizing: "border-box",
                       padding: "10px 12px",
-                      fontSize: 13,
+                      fontSize: 16,
                       fontFamily: '"Share Tech Mono", "Courier New", monospace',
                       borderRadius: 4,
                       border: "1px solid #2b2824",
