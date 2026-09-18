@@ -307,11 +307,12 @@ function drawSegDot(ctx, x, y, h, t, slant = DB_SLANT) {
 }
 
 // advance widths for a databack string (digits, spaces, apostrophe)
-// Measured off GUYSTYLE's reference frame at matched glyph height: its digits
-// are narrower and its gaps about twice as wide as a tight setting, for much
-// the same overall length. Keep changes to the pair, not to one of them.
+// Tracking measured off GUYSTYLE's reference frame with the ink heights matched
+// (a glyph's ink runs dh + thickness tall, so comparing at equal dh reads the
+// proportions wrong): its digits sit at 0.67 wide for their height and carry
+// about twice the gap a tight setting gives them.
 function segMeasure(chars, dh) {
-  const dw = dh * 0.46, sep = dh * 0.4, grp = dh * 0.75, ap = dh * 0.22;
+  const dw = dh * 0.55, sep = dh * 0.38, grp = dh * 0.75, ap = dh * 0.22;
   const adv = [];
   for (const ch of chars) {
     if (ch === " ") adv.push(grp);
