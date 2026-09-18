@@ -307,8 +307,11 @@ function drawSegDot(ctx, x, y, h, t, slant = DB_SLANT) {
 }
 
 // advance widths for a databack string (digits, spaces, apostrophe)
+// Measured off GUYSTYLE's reference frame at matched glyph height: its digits
+// are narrower and its gaps about twice as wide as a tight setting, for much
+// the same overall length. Keep changes to the pair, not to one of them.
 function segMeasure(chars, dh) {
-  const dw = dh * 0.55, sep = dh * 0.26, grp = dh * 0.75, ap = dh * 0.22;
+  const dw = dh * 0.46, sep = dh * 0.4, grp = dh * 0.75, ap = dh * 0.22;
   const adv = [];
   for (const ch of chars) {
     if (ch === " ") adv.push(grp);
@@ -509,12 +512,14 @@ function drawLcdPanel(ctx, canvasW, canvasH, drawW, exif) {
   if (date) seg(ox, yDate, dhDate, date, "left", false);
 }
 
-// EXIF "YYYY:MM:DD ..." -> "'YY MM DD" databack format
+// EXIF "YYYY:MM:DD ..." -> "'YY M DD" databack format. The month carries no
+// leading zero, as on the reference frame ('23 2 16).
 function fmtDatabackDate(v) {
   if (!v) return null;
   const m = v.match(/(\d{4}):(\d{2}):(\d{2})/);
   if (!m) return null;
-  return `'${m[1].slice(2)} ${m[2]} ${m[3]}`;
+  const month = String(parseInt(m[2], 10) || m[2]);
+  return `'${m[1].slice(2)} ${month} ${m[3]}`;
 }
 
 function cameraNameOf(exif) {
