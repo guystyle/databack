@@ -776,8 +776,8 @@ const BRANDS = {
   lg: { label: "LG", logo: "lg.png", text: "LG", weight: 700, track: 0.06 },
   goldstar: { label: "GoldStar", logo: "goldstar.png", text: "GoldStar", weight: 700, track: 0.02 },
   dji: { label: "DJI", logo: "dji.png", text: "DJI", weight: 700, track: 0.08 },
-  zeiss: { label: "ZEISS (워드마크)", text: "ZEISS", weight: 700, track: 0.12 },
-  gopro: { label: "GoPro (워드마크)", text: "GoPro", weight: 700, track: 0 },
+  zeiss: { label: "ZEISS", text: "ZEISS", weight: 700, track: 0.12 },
+  gopro: { label: "GoPro", text: "GoPro", weight: 700, track: 0 },
 };
 
 // Artwork is fetched on demand and cached for the session. `onReady` fires when
@@ -874,7 +874,7 @@ const LOGO_SCALES = { s: 0.34, m: 0.46, l: 0.6 };
 const TEXT_FONTS = {
   mono: {
     label: "MONO",
-    note: "JetBrains Mono — 코딩 폰트",
+    note: "JetBrains Mono",
     family: '"JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace',
     bold: 700,
     regular: 400,
@@ -882,7 +882,7 @@ const TEXT_FONTS = {
   },
   terminal: {
     label: "TERMINAL",
-    note: "Share Tech Mono — 앱 UI와 같은 톤",
+    note: "Share Tech Mono",
     family: '"Share Tech Mono", "Courier New", monospace',
     bold: 400, // single weight: hierarchy comes from size and colour
     regular: 400,
@@ -890,7 +890,7 @@ const TEXT_FONTS = {
   },
   sans: {
     label: "SANS",
-    note: "Barlow — 레퍼런스와 같은 그로테스크",
+    note: "Barlow",
     family: '"Barlow", "Helvetica Neue", Helvetica, Arial, sans-serif',
     bold: 600,
     regular: 300,
@@ -1185,7 +1185,7 @@ export default function ExifFrameApp() {
       file.type === "image/heif";
     if (isHeic) {
       setError(
-        "HEIC 사진은 브라우저에서 열 수 없어요. 아이폰이라면 설정 › 카메라 › 포맷에서 '높은 호환성(JPEG)'으로 바꾸거나, 사진을 JPG로 저장해 다시 올려주세요. (HEIC를 변환하면 촬영 날짜 정보가 사라져 데이터백에 쓸 수 없어요.)"
+        "HEIC 사진은 열 수 없어요. 아이폰 설정 › 카메라 › 포맷을 '높은 호환성'으로 바꾸면 JPG로 찍혀요."
       );
       return;
     }
@@ -1241,7 +1241,7 @@ export default function ExifFrameApp() {
         srcH = drawable.naturalHeight;
       } catch (err2) {
         setError(
-          "이 사진을 열 수 없어요. 카메라 원본이 MPO 형식이거나 파일이 손상됐을 수 있어요. 사진을 한 번 다른 앱(갤러리/사진)에서 열어 JPG로 다시 저장한 뒤 올려보세요."
+          "이 사진을 열 수 없어요. 다른 앱에서 JPG로 다시 저장한 뒤 올려주세요."
         );
         setLoading(false);
         return;
@@ -1249,7 +1249,7 @@ export default function ExifFrameApp() {
     }
 
     if (!srcW || !srcH) {
-      setError("사진 크기를 읽지 못했어요. 다른 사진으로 시도해주세요.");
+      setError("사진을 읽지 못했어요. 다른 사진으로 시도해주세요.");
       setLoading(false);
       return;
     }
@@ -1281,13 +1281,13 @@ export default function ExifFrameApp() {
         setLoading(false);
       };
       finalImg.onerror = () => {
-        setError("이미지를 준비하는 중 문제가 생겼어요. 다시 시도해주세요.");
+        setError("사진을 불러오지 못했어요. 다시 시도해주세요.");
         setLoading(false);
       };
       finalImg.src = dataUrl;
     } catch (err) {
       setError(
-        "사진이 너무 커서 이 기기에서 처리할 수 없어요. 사진 크기를 줄여서(예: 화면 캡처나 리사이즈) 다시 올려주세요."
+        "사진이 너무 커요. 크기를 줄여서 올려주세요."
       );
       setLoading(false);
     }
@@ -1454,7 +1454,7 @@ export default function ExifFrameApp() {
         triggerDownload(canvasRef.current.toDataURL(exportMime, exportQ), filename);
       } catch (err2) {
         setError(
-          "이미지를 저장용으로 만드는 데 실패했어요. 사진이 너무 큰 것 같아요. 다른 사진으로 시도하거나, 화면을 캡처해 저장해주세요."
+          "저장에 실패했어요. 사진이 너무 커서 그럴 수 있어요."
         );
       }
     }
@@ -1502,7 +1502,7 @@ export default function ExifFrameApp() {
           /* too large for the quota — it still applies to this session */
         }
       };
-      im.onerror = () => setError("로고 이미지를 열 수 없어요. 배경이 투명한 PNG를 권장해요.");
+      im.onerror = () => setError("로고를 열 수 없어요. 투명 PNG를 올려주세요.");
       im.src = reader.result;
     };
     reader.readAsDataURL(file);
@@ -1531,8 +1531,7 @@ export default function ExifFrameApp() {
     >
       <div style={{ maxWidth: 480, margin: "0 auto" }}>
         <div style={{ marginBottom: 24 }}>
-          <div style={{ fontSize: 11, letterSpacing: 3, color: "#8a8577", marginBottom: 4 }}>EXIF · FRAME · TOOL</div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0, letterSpacing: -0.5 }}>사진에서 촬영 정보를 꺼내 프레임을 태우세요</h1>
+          <h1 style={{ fontSize: 20, fontWeight: 700, margin: 0, letterSpacing: 6 }}>DATABACK</h1>
         </div>
 
         {/* upload zone */}
@@ -1554,7 +1553,7 @@ export default function ExifFrameApp() {
             }}
           >
             <Upload size={22} strokeWidth={1.5} />
-            <span style={{ fontSize: 13 }}>{loading ? "사진 준비 중…" : "탭하거나 사진을 끌어다 놓으세요 (JPEG · PNG)"}</span>
+            <span style={{ fontSize: 13 }}>{loading ? "불러오는 중…" : "사진 올리기"}</span>
             <input type="file" accept="image/jpeg,image/jpg,image/png,image/*" style={{ display: "none" }} onChange={(e) => handleFile(e.target.files?.[0])} />
           </label>
         )}
@@ -1574,15 +1573,15 @@ export default function ExifFrameApp() {
 
             {/* editable metadata */}
             <div style={{ background: "#1c1a17", borderRadius: 4, padding: 14, marginBottom: 16 }}>
-              <div style={{ fontSize: 11, letterSpacing: 2, color: "#8a8577", marginBottom: 10 }}>METADATA (수정 가능)</div>
+              <div style={{ fontSize: 11, letterSpacing: 2, color: "#8a8577", marginBottom: 10 }}>METADATA</div>
               {!exif && (
                 <div style={{ color: "#8a8577", fontSize: 12, lineHeight: 1.5, marginBottom: 10 }}>
-                  이 파일에서 EXIF를 찾지 못했어요. 아래에 직접 입력하면 각인에 사용돼요.
+                  촬영 정보가 없는 사진이에요. 직접 입력할 수 있어요.
                 </div>
               )}
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                <MetaField label="CAMERA" value={meta.camera} onChange={setMetaField("camera")} placeholder="예: Canon PowerShot V1" />
-                <MetaField label="LENS" value={meta.lens} onChange={setMetaField("lens")} placeholder="(선택)" />
+                <MetaField label="CAMERA" value={meta.camera} onChange={setMetaField("camera")} placeholder="Canon PowerShot V1" />
+                <MetaField label="LENS" value={meta.lens} onChange={setMetaField("lens")} placeholder="28-70mm F2.8" />
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
                   <MetaField compact label="MM" value={meta.focal} onChange={setMetaField("focal")} placeholder="12" />
                   <MetaField compact label="F" value={meta.fnumber} onChange={setMetaField("fnumber")} placeholder="5.0" />
@@ -1637,13 +1636,13 @@ export default function ExifFrameApp() {
                       color: "#e8e2d5",
                     }}
                   >
-                    <option value="auto">AUTO {autoBrand ? `— ${BRANDS[autoBrand].label}` : "— 감지 안 됨"}</option>
+                    <option value="auto">{autoBrand ? `AUTO — ${BRANDS[autoBrand].label}` : "AUTO"}</option>
                     {Object.entries(BRANDS).map(([key, b]) => (
                       <option key={key} value={key}>
                         {b.label}
                       </option>
                     ))}
-                    <option value="none">로고 없음</option>
+                    <option value="none">없음</option>
                   </select>
                   <div style={{ display: "flex", gap: 4 }}>
                     {["s", "m", "l"].map((key) => (
@@ -1680,7 +1679,7 @@ export default function ExifFrameApp() {
                       cursor: "pointer",
                     }}
                   >
-                    {logoImg ? "로고 파일 사용 중" : "공식 로고 PNG 올리기"}
+                    {logoImg ? "내 로고 사용 중" : "로고 직접 올리기"}
                     <input type="file" accept="image/png,image/svg+xml,image/*" style={{ display: "none" }} onChange={(e) => handleLogoFile(e.target.files?.[0])} />
                   </label>
                   {logoImg && (
@@ -1714,13 +1713,6 @@ export default function ExifFrameApp() {
                       {f.label}
                     </button>
                   ))}
-                </div>
-                <div style={{ fontSize: 10, color: "#6f6a60", lineHeight: 1.6, marginTop: 6 }}>
-                  {TEXT_FONTS[textFont].note} · 로고 워드마크는 폰트 설정과 무관하게 유지돼요.
-                </div>
-
-                <div style={{ fontSize: 10, color: "#6f6a60", lineHeight: 1.6, marginTop: 8 }}>
-                  제조사 공식 로고를 씁니다 (ZEISS·GoPro는 아트워크가 없어 워드마크로 대체). 다른 로고를 쓰려면 배경이 투명한 PNG를 올리세요 — 업로드본이 항상 우선.
                 </div>
               </div>
             )}
@@ -1771,11 +1763,11 @@ export default function ExifFrameApp() {
                 </div>
 
                 <div style={{ marginBottom: 16 }}>
-                  <div style={{ fontSize: 11, letterSpacing: 2, color: "#8a8577", marginBottom: 8 }}>CAPTION (선택)</div>
+                  <div style={{ fontSize: 11, letterSpacing: 2, color: "#8a8577", marginBottom: 8 }}>CAPTION</div>
                   <input
                     value={caption}
                     onChange={(e) => setCaption(e.target.value)}
-                    placeholder="예: COSTA DE CAPARICA, PT"
+                    placeholder="COSTA DE CAPARICA, PT"
                     style={{
                       width: "100%",
                       boxSizing: "border-box",
@@ -1794,7 +1786,7 @@ export default function ExifFrameApp() {
 
             {/* aspect ratio (letterbox, no crop) */}
             <div style={{ marginBottom: 16 }}>
-              <div style={{ fontSize: 11, letterSpacing: 2, color: "#8a8577", marginBottom: 8 }}>RATIO — 9:16 = 인스타 스토리</div>
+              <div style={{ fontSize: 11, letterSpacing: 2, color: "#8a8577", marginBottom: 8 }}>RATIO</div>
               <div style={{ display: "flex", gap: 8 }}>
                 {Object.keys(RATIOS).map((key) => (
                   <button
@@ -1915,7 +1907,7 @@ export default function ExifFrameApp() {
                   cursor: "pointer",
                 }}
               >
-                다시 선택
+                사진 바꾸기
               </button>
             </div>
           </>
