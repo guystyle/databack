@@ -1354,6 +1354,31 @@ export default function ExifFrameApp() {
           const x0 = canvasW - pad - total;
           const y0 = canvasH - pad - dh;
 
+          // How hard the imprint burns depends on what it lands on. A real
+          // databack emits a fixed amount of light: it overwhelms a night
+          // frame (the core saturates to white-hot) and is overwhelmed by a
+          // bright one. Read the scene under the stamp and scale accordingly.
+          const heat = (() => {
+            const bx = Math.max(0, Math.round(x0 - dh));
+            const by = Math.max(0, Math.round(y0 - dh * 0.5));
+            const bw = Math.min(canvasW - bx, Math.round(total + dh * 2));
+            const bh = Math.min(canvasH - by, Math.round(dh * 2));
+            if (bw <= 0 || bh <= 0) return 1;
+            let sum = 0;
+            let n = 0;
+            try {
+              const d = ctx.getImageData(bx, by, bw, bh).data;
+              for (let i = 0; i < d.length; i += 4 * 7) {
+                sum += 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+                n++;
+              }
+            } catch (e) {
+              return 1; // tainted canvas — assume a dark frame
+            }
+            const lum = n ? sum / n : 0;
+            return Math.max(0, Math.min(1, (140 - lum) / 90)); // 1 at lum<=50, 0 at lum>=140
+          })();
+
           // render the stamp shape once on an offscreen canvas (white on transparent)
           const stamp = document.createElement("canvas");
           stamp.width = canvasW;
@@ -1388,10 +1413,19 @@ export default function ExifFrameApp() {
           drawTinted("rgba(255,74,18,0.75)", dh * 0.12); // tight halo
           ctx.restore();
 
-          // Hot core: normal compositing with a solid orange-red so the date
-          // always reads as orange-red. (Pure additive clips to white on bright
-          // backgrounds, which is what made the stamp look white.)
+          // Core, in two passes. The solid one anchors the colour so a bright
+          // frame keeps its orange-red date instead of washing out to white.
           drawTinted("rgb(255,78,28)", 0);
+
+          // Then the additive pass, at full strength on a dark frame and gone
+          // on a bright one. This is what gives a night shot the white-hot
+          // centre a real databack burns into film.
+          if (heat > 0.01) {
+            ctx.save();
+            ctx.globalCompositeOperation = "lighter";
+            drawTinted(`rgba(255,78,28,${heat.toFixed(3)})`, 0);
+            ctx.restore();
+          }
         }
       } else if (frameStyle === "lcd") {
         // small camera-style LCD status panel overlaid on the image
