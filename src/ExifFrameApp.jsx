@@ -825,7 +825,37 @@ function fmtStrapDateTime(effective, original) {
 // logo cap-height as a fraction of the bar height
 const LOGO_SCALES = { s: 0.34, m: 0.46, l: 0.6 };
 
-function drawStrap(ctx, canvas, drawW, drawH, imgEl, exif, filmLook, dateStr, logo) {
+// Typefaces for the strap bar. Monospace runs wide, so each set carries a size
+// factor that keeps the two columns roughly the same length as the grotesque.
+// The maker wordmark is NOT affected — a brand name set in mono reads wrong.
+const TEXT_FONTS = {
+  mono: {
+    label: "MONO",
+    note: "JetBrains Mono — 코딩 폰트",
+    family: '"JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace',
+    bold: 700,
+    regular: 400,
+    scale: 0.88,
+  },
+  terminal: {
+    label: "TERMINAL",
+    note: "Share Tech Mono — 앱 UI와 같은 톤",
+    family: '"Share Tech Mono", "Courier New", monospace',
+    bold: 400, // single weight: hierarchy comes from size and colour
+    regular: 400,
+    scale: 0.96,
+  },
+  sans: {
+    label: "SANS",
+    note: "Barlow — 레퍼런스와 같은 그로테스크",
+    family: '"Barlow", "Helvetica Neue", Helvetica, Arial, sans-serif',
+    bold: 600,
+    regular: 300,
+    scale: 1,
+  },
+};
+
+function drawStrap(ctx, canvas, drawW, drawH, imgEl, exif, filmLook, dateStr, logo, font) {
   const m = Math.round(drawW * 0.022);
   const bar = Math.round(drawW * 0.115);
   const W = drawW + m * 2;
@@ -848,10 +878,15 @@ function drawStrap(ctx, canvas, drawW, drawH, imgEl, exif, filmLook, dateStr, lo
   const cy = m + drawH + bar / 2;
   const y1 = cy - bar * 0.17;
   const y2 = cy + bar * 0.19;
-  const s1 = Math.max(9, Math.round(bar * 0.25));
-  const s2 = Math.max(8, Math.round(bar * 0.205));
+  const face = font || TEXT_FONTS.mono;
+  const s1 = Math.max(9, Math.round(bar * 0.25 * face.scale));
+  const s2 = Math.max(8, Math.round(bar * 0.205 * face.scale));
   const gap = Math.round(bar * 0.34);
-  const fontA = (px, w) => `${w} ${px}px ${LOGO_SANS}`;
+  const BOLD = face.bold;
+  const REG = face.regular;
+  const fontA = (px, w) => `${w} ${px}px ${face.family}`;
+  // the wordmark fallback keeps its own grotesque whatever the bar is set in
+  const wordmarkFont = (px, w) => `${w} ${px}px ${LOGO_SANS}`;
   ctx.textBaseline = "middle";
   ctx.textAlign = "left";
 
@@ -862,13 +897,13 @@ function drawStrap(ctx, canvas, drawW, drawH, imgEl, exif, filmLook, dateStr, lo
     .join(" ");
   let leftW = 0;
   if (expo) {
-    ctx.font = fontA(s1, 700);
+    ctx.font = fontA(s1, BOLD);
     ctx.fillStyle = ink;
     ctx.fillText(expo, m, y1);
     leftW = ctx.measureText(expo).width;
   }
   if (dateStr) {
-    ctx.font = fontA(s2, 400);
+    ctx.font = fontA(s2, REG);
     ctx.fillStyle = sub;
     ctx.fillText(dateStr, m, y2);
     leftW = Math.max(leftW, ctx.measureText(dateStr).width);
@@ -902,7 +937,7 @@ function drawStrap(ctx, canvas, drawW, drawH, imgEl, exif, filmLook, dateStr, lo
     logoPx = Math.max(10, Math.round(cap / 0.72)); // cap height ≈ 0.72em
     const measure = () => {
       logoTrack = logoPx * logo.brand.track;
-      ctx.font = fontA(logoPx, logo.brand.weight);
+      ctx.font = wordmarkFont(logoPx, logo.brand.weight);
       logoW = trackedWidth(ctx, logo.brand.text, logoTrack);
     };
     measure();
@@ -913,9 +948,9 @@ function drawStrap(ctx, canvas, drawW, drawH, imgEl, exif, filmLook, dateStr, lo
     logoCap = logoPx * 0.72;
   }
 
-  ctx.font = fontA(s1, 700);
+  ctx.font = fontA(s1, BOLD);
   let textW = body ? ctx.measureText(body).width : 0;
-  ctx.font = fontA(s2, 400);
+  ctx.font = fontA(s2, REG);
   textW = Math.max(textW, lens ? ctx.measureText(lens).width : 0);
 
   let bodyPx = s1;
@@ -935,12 +970,12 @@ function drawStrap(ctx, canvas, drawW, drawH, imgEl, exif, filmLook, dateStr, lo
         const w = ctx.measureText(text).width;
         return w <= budget ? px : Math.max(Math.round(px * 0.78), Math.round(px * (budget / w)));
       };
-      bodyPx = squeeze(s1, body, 700);
-      lensPx = squeeze(s2, lens, 400);
-      ctx.font = fontA(bodyPx, 700);
+      bodyPx = squeeze(s1, body, BOLD);
+      lensPx = squeeze(s2, lens, REG);
+      ctx.font = fontA(bodyPx, BOLD);
       body = fitText(ctx, body, budget);
       textW = body ? ctx.measureText(body).width : 0;
-      ctx.font = fontA(lensPx, 400);
+      ctx.font = fontA(lensPx, REG);
       lens = fitText(ctx, lens, budget);
       textW = Math.max(textW, lens ? ctx.measureText(lens).width : 0);
     }
@@ -950,12 +985,12 @@ function drawStrap(ctx, canvas, drawW, drawH, imgEl, exif, filmLook, dateStr, lo
   if (textW) {
     ctx.textAlign = "right";
     if (body) {
-      ctx.font = fontA(bodyPx, 700);
+      ctx.font = fontA(bodyPx, BOLD);
       ctx.fillStyle = ink;
       ctx.fillText(body, x, y1);
     }
     if (lens) {
-      ctx.font = fontA(lensPx, 400);
+      ctx.font = fontA(lensPx, REG);
       ctx.fillStyle = sub;
       ctx.fillText(lens, x, y2);
     }
@@ -975,7 +1010,7 @@ function drawStrap(ctx, canvas, drawW, drawH, imgEl, exif, filmLook, dateStr, lo
   if (imgW) {
     ctx.drawImage(logo.img, x - imgW, cy - imgH / 2, imgW, imgH);
   } else if (logoW) {
-    ctx.font = fontA(logoPx, logo.brand.weight);
+    ctx.font = wordmarkFont(logoPx, logo.brand.weight);
     ctx.fillStyle = ink;
     ctx.textBaseline = "alphabetic";
     drawTracked(ctx, logo.brand.text, x - logoW, cy + logoCap / 2, logoTrack);
@@ -1032,6 +1067,7 @@ export default function ExifFrameApp() {
   const [logoScale, setLogoScale] = useState(() => (LOGO_SCALES[SAVED.logoScale] ? SAVED.logoScale : "m"));
   const [logoImg, setLogoImg] = useState(null);
   const [logoTick, setLogoTick] = useState(0); // bumped when maker artwork finishes loading
+  const [textFont, setTextFont] = useState(() => (TEXT_FONTS[SAVED.textFont] ? SAVED.textFont : "mono"));
   const [error, setError] = useState(null);
   const [fileName, setFileName] = useState("");
   const [loading, setLoading] = useState(false);
@@ -1056,6 +1092,10 @@ export default function ExifFrameApp() {
       document.fonts.load('16px "Share Tech Mono"'),
       document.fonts.load('16px "Caveat"'),
       document.fonts.load('16px "Nanum Pen Script"'),
+      document.fonts.load('16px "JetBrains Mono"'),
+      document.fonts.load('700 16px "JetBrains Mono"'),
+      document.fonts.load('16px "Barlow"'),
+      document.fonts.load('600 16px "Barlow"'),
     ])
       .catch(() => {})
       .then(() => alive && setFontsReady(true));
@@ -1080,11 +1120,11 @@ export default function ExifFrameApp() {
 
   useEffect(() => {
     try {
-      localStorage.setItem(SETTINGS_KEY, JSON.stringify({ frameStyle, ratio, format, quality, fields, filmLook, logoBrand, logoScale }));
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify({ frameStyle, ratio, format, quality, fields, filmLook, logoBrand, logoScale, textFont }));
     } catch (e) {
       /* private mode etc. — settings just won't persist */
     }
-  }, [frameStyle, ratio, format, quality, fields, filmLook, logoBrand, logoScale]);
+  }, [frameStyle, ratio, format, quality, fields, filmLook, logoBrand, logoScale, textFont]);
 
   const handleFile = useCallback(async (file) => {
     if (!file) return;
@@ -1243,7 +1283,7 @@ export default function ExifFrameApp() {
         img: logoBrand === "none" ? null : logoImg || art,
         brand,
         scale: logoScale,
-      });
+      }, TEXT_FONTS[textFont] || TEXT_FONTS.mono);
     } else {
       // databack / lcd: full-bleed photo with an overlay
       const canvasW = drawW;
@@ -1323,7 +1363,7 @@ export default function ExifFrameApp() {
     fctx.fillRect(0, 0, outW, outH);
     fctx.drawImage(content, Math.round((outW - content.width) / 2), Math.round((outH - content.height) / 2));
     setOutSize([outW, outH]);
-  }, [imgEl, fx, exif, frameStyle, fields, caption, ratio, filmLook, fontsReady, logoBrand, logoScale, logoImg, logoTick]);
+  }, [imgEl, fx, exif, frameStyle, fields, caption, ratio, filmLook, fontsReady, logoBrand, logoScale, logoImg, logoTick, textFont]);
 
   // small debounce keeps typing in the metadata fields smooth — a full-size
   // canvas render per keystroke stutters on mobile
@@ -1606,6 +1646,33 @@ export default function ExifFrameApp() {
                     </button>
                   )}
                 </div>
+                <div style={{ fontSize: 11, letterSpacing: 2, color: "#8a8577", margin: "16px 0 8px" }}>TEXT FONT</div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {Object.entries(TEXT_FONTS).map(([key, f]) => (
+                    <button
+                      key={key}
+                      onClick={() => setTextFont(key)}
+                      title={f.note}
+                      style={{
+                        flex: 1,
+                        padding: "9px 4px",
+                        fontSize: 11,
+                        fontFamily: f.family,
+                        borderRadius: 4,
+                        border: "1px solid " + (textFont === key ? "#c4581f" : "#2b2824"),
+                        background: textFont === key ? "#2b2416" : "transparent",
+                        color: textFont === key ? "#c4581f" : "#8a8577",
+                        cursor: "pointer",
+                      }}
+                    >
+                      {f.label}
+                    </button>
+                  ))}
+                </div>
+                <div style={{ fontSize: 10, color: "#6f6a60", lineHeight: 1.6, marginTop: 6 }}>
+                  {TEXT_FONTS[textFont].note} · 로고 워드마크는 폰트 설정과 무관하게 유지돼요.
+                </div>
+
                 <div style={{ fontSize: 10, color: "#6f6a60", lineHeight: 1.6, marginTop: 8 }}>
                   제조사 공식 로고를 씁니다 (ZEISS·GoPro는 아트워크가 없어 워드마크로 대체). 다른 로고를 쓰려면 배경이 투명한 PNG를 올리세요 — 업로드본이 항상 우선.
                 </div>
