@@ -131,6 +131,7 @@ function fmtDate(v) {
 const STYLES = {
   film: { label: "Film Frame" },
   polaroid: { label: "Polaroid" },
+  strap: { label: "Strap" },
   databack: { label: "Data Back" },
   lcd: { label: "LCD" },
 };
@@ -533,10 +534,13 @@ function exifFromMeta(meta) {
 // aspect-ratio padding for export (fit, never crop) — 9:16 = Instagram story
 const RATIOS = { free: null, "1:1": 1, "4:5": 4 / 5, "9:16": 9 / 16 };
 // letterbox color per style, matched to each frame's own base
-const PAD_BG = { film: "#0f0c07", polaroid: "#f1ede2", databack: "#000000", lcd: "#000000" };
+const PAD_BG = { film: "#0f0c07", polaroid: "#f1ede2", strap: "#ffffff", databack: "#000000", lcd: "#000000" };
 
 // persisted preferences (style/ratio/export choices survive reloads)
 const SETTINGS_KEY = "databack:settings";
+// an uploaded logo lives in its own key — it's a data URL, far bigger than the
+// rest of the settings, and a quota failure shouldn't take them down with it
+const LOGO_KEY = "databack:logo";
 const SAVED = (() => {
   try {
     return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {};
@@ -694,6 +698,263 @@ function drawPolaroid(ctx, canvas, drawW, drawH, imgEl, exif, fields, caption, f
   ctx.textAlign = "left";
 }
 
+// ---------- strap (maker-logo card) ----------
+// A white card: the photo sits on an even margin, and a bottom bar carries the
+// exposure line on the left and, right-aligned, the maker's logo · a divider ·
+// the body and lens names.
+//
+// The built-in logos are TYPOGRAPHIC stand-ins — the brand name set in a bold,
+// tracked grotesque — not the official trademark artwork. Uploading a
+// transparent PNG in the LOGO panel replaces the wordmark with the real thing.
+const LOGO_SANS = '"Helvetica Neue", Helvetica, Arial, "Liberation Sans", sans-serif';
+
+const BRANDS = {
+  sony: { label: "SONY", text: "SONY", weight: 700, track: 0.13 },
+  canon: { label: "Canon", text: "Canon", weight: 700, track: 0.01 },
+  nikon: { label: "Nikon", text: "Nikon", weight: 700, track: 0.03 },
+  fujifilm: { label: "FUJIFILM", text: "FUJIFILM", weight: 700, track: 0.05 },
+  leica: { label: "Leica", text: "LEICA", weight: 700, track: 0.12 },
+  lumix: { label: "LUMIX", text: "LUMIX", weight: 700, track: 0.12 },
+  panasonic: { label: "Panasonic", text: "Panasonic", weight: 700, track: 0.02 },
+  olympus: { label: "OLYMPUS", text: "OLYMPUS", weight: 700, track: 0.08 },
+  omsystem: { label: "OM SYSTEM", text: "OM SYSTEM", weight: 700, track: 0.06 },
+  ricoh: { label: "RICOH", text: "RICOH", weight: 700, track: 0.1 },
+  pentax: { label: "PENTAX", text: "PENTAX", weight: 700, track: 0.1 },
+  hasselblad: { label: "HASSELBLAD", text: "HASSELBLAD", weight: 400, track: 0.14 },
+  sigma: { label: "SIGMA", text: "SIGMA", weight: 700, track: 0.13 },
+  zeiss: { label: "ZEISS", text: "ZEISS", weight: 700, track: 0.12 },
+  apple: { label: "iPhone", text: "iPhone", weight: 600, track: 0 },
+  samsung: { label: "SAMSUNG", text: "SAMSUNG", weight: 700, track: 0.08 },
+  dji: { label: "DJI", text: "DJI", weight: 700, track: 0.08 },
+  gopro: { label: "GoPro", text: "GoPro", weight: 700, track: 0 },
+};
+
+// Matched in order, so the sub-brands (LUMIX, OM SYSTEM) win over their parent.
+// Kept to explicit names and unmistakable model prefixes — a bare model number
+// would misfire across makers.
+const BRAND_PATTERNS = [
+  ["omsystem", /om[\s-]?system|\bom-[135]\b/i],
+  ["lumix", /lumix|\bdc-[a-z]|\bdmc-[a-z]/i],
+  ["panasonic", /panasonic/i],
+  ["olympus", /olympus|\be-m[15]\b|\bpen-f\b/i],
+  ["sony", /sony|\bilce-|\bilme-|\bdsc-|\bzv-[a-z0-9]/i],
+  ["canon", /canon|\beos\b|powershot/i],
+  ["nikon", /nikon|\bcoolpix\b/i],
+  ["fujifilm", /fuji\s?film|fuji|\bgfx\b|\bx-?(pro|t|e|s|h)\d/i],
+  ["leica", /leica/i],
+  ["hasselblad", /hasselblad|\bx[12]d\b/i],
+  ["ricoh", /ricoh|\bgr\s?ii+i?\b|\bgr\s?\d\b/i],
+  ["pentax", /pentax/i],
+  ["sigma", /sigma/i],
+  ["zeiss", /zeiss/i],
+  ["apple", /apple|iphone|ipad/i],
+  ["samsung", /samsung|galaxy/i],
+  ["dji", /\bdji\b|mavic|osmo|\bair\s?[23]s?\b/i],
+  ["gopro", /gopro|hero\s?\d/i],
+];
+
+function detectBrand(cameraStr) {
+  const s = (cameraStr || "").trim();
+  if (!s) return null;
+  for (const [key, re] of BRAND_PATTERNS) if (re.test(s)) return key;
+  return null;
+}
+
+// canvas letterSpacing is still uneven across browsers, so wordmark tracking is
+// applied by hand, glyph by glyph.
+function trackedWidth(ctx, text, track) {
+  let w = 0;
+  for (const ch of text) w += ctx.measureText(ch).width + track;
+  return text.length ? w - track : 0;
+}
+function drawTracked(ctx, text, x, y, track) {
+  let cx = x;
+  for (const ch of text) {
+    ctx.fillText(ch, cx, y);
+    cx += ctx.measureText(ch).width + track;
+  }
+}
+// shorten to fit (long third-party lens names overrun the bar otherwise)
+function fitText(ctx, text, maxW) {
+  if (!text || ctx.measureText(text).width <= maxW) return text;
+  let s = text;
+  while (s.length > 1 && ctx.measureText(s + "…").width > maxW) s = s.slice(0, -1);
+  return s + "…";
+}
+
+// "YYYY/MM/DD HH:MM:SS" for the strap bar. The editable date field only carries
+// Y-M-D, so the original EXIF clock time is kept while the day is unchanged.
+function fmtStrapDateTime(effective, original) {
+  const m = (effective || "").match(/(\d{4}):(\d{2}):(\d{2})/);
+  if (!m) return null;
+  const o = (original || "").match(/(\d{4}):(\d{2}):(\d{2})[ T](\d{2}:\d{2}:\d{2})/);
+  const same = o && o[1] === m[1] && o[2] === m[2] && o[3] === m[3];
+  return `${m[1]}/${m[2]}/${m[3]}${same ? ` ${o[4]}` : ""}`;
+}
+
+// logo cap-height as a fraction of the bar height
+const LOGO_SCALES = { s: 0.34, m: 0.46, l: 0.6 };
+
+function drawStrap(ctx, canvas, drawW, drawH, imgEl, exif, filmLook, dateStr, logo) {
+  const m = Math.round(drawW * 0.022);
+  const bar = Math.round(drawW * 0.115);
+  const W = drawW + m * 2;
+  const H = m + drawH + bar;
+  canvas.width = W;
+  canvas.height = H;
+
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, W, H);
+  ctx.drawImage(imgEl, m, m, drawW, drawH);
+  if (filmLook) applyFilmLook(ctx, m, m, drawW, drawH);
+
+  // hairline so a bright photo edge doesn't dissolve into the card
+  ctx.strokeStyle = "rgba(0,0,0,0.08)";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(m + 0.5, m + 0.5, drawW - 1, drawH - 1);
+
+  const ink = "#111111";
+  const sub = "#8d8d8d";
+  const cy = m + drawH + bar / 2;
+  const y1 = cy - bar * 0.17;
+  const y2 = cy + bar * 0.19;
+  const s1 = Math.max(9, Math.round(bar * 0.25));
+  const s2 = Math.max(8, Math.round(bar * 0.205));
+  const gap = Math.round(bar * 0.34);
+  const fontA = (px, w) => `${w} ${px}px ${LOGO_SANS}`;
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "left";
+
+  // --- left: exposure line over the timestamp
+  const fnum = exif?.FNumber != null ? `F${exif.FNumber.toFixed(1).replace(/\.0$/, "")}` : null;
+  const expo = [exif?.ISO != null ? `ISO${exif.ISO}` : null, fmtFocal(exif?.FocalLength), fnum, fmtExposure(exif?.ExposureTime)]
+    .filter(Boolean)
+    .join(" ");
+  let leftW = 0;
+  if (expo) {
+    ctx.font = fontA(s1, 700);
+    ctx.fillStyle = ink;
+    ctx.fillText(expo, m, y1);
+    leftW = ctx.measureText(expo).width;
+  }
+  if (dateStr) {
+    ctx.font = fontA(s2, 400);
+    ctx.fillStyle = sub;
+    ctx.fillText(dateStr, m, y2);
+    leftW = Math.max(leftW, ctx.measureText(dateStr).width);
+  }
+
+  // --- right cluster: logo | body / lens, all measured before anything is drawn
+  const avail = W - m * 2 - (leftW ? leftW + gap : 0);
+  const cap = bar * (LOGO_SCALES[logo?.scale] || LOGO_SCALES.m);
+
+  let body = cameraNameOf(exif);
+  let lens = (exif?.LensModel || "").trim();
+  // however big the logo is asked to be, it never takes the bar over from the
+  // body / lens names — decisive on portrait photos, where the bar is narrow.
+  // With no names to print, it may spread out instead.
+  const logoMax = avail * (body || lens ? 0.42 : 0.72);
+  let logoW = 0;
+  let logoPx = 0;
+  let logoTrack = 0;
+  let logoCap = cap;
+  let imgH = 0;
+  let imgW = 0;
+  if (logo?.img?.naturalWidth) {
+    imgH = cap * 1.4; // uploaded artwork usually carries its own padding
+    imgW = imgH * (logo.img.naturalWidth / logo.img.naturalHeight);
+    if (imgW > logoMax) {
+      imgH *= logoMax / imgW;
+      imgW = logoMax;
+    }
+    logoW = imgW;
+  } else if (logo?.brand) {
+    logoPx = Math.max(10, Math.round(cap / 0.72)); // cap height ≈ 0.72em
+    const measure = () => {
+      logoTrack = logoPx * logo.brand.track;
+      ctx.font = fontA(logoPx, logo.brand.weight);
+      logoW = trackedWidth(ctx, logo.brand.text, logoTrack);
+    };
+    measure();
+    if (logoW > logoMax) {
+      logoPx = Math.max(10, Math.round(logoPx * (logoMax / logoW)));
+      measure();
+    }
+    logoCap = logoPx * 0.72;
+  }
+
+  ctx.font = fontA(s1, 700);
+  let textW = body ? ctx.measureText(body).width : 0;
+  ctx.font = fontA(s2, 400);
+  textW = Math.max(textW, lens ? ctx.measureText(lens).width : 0);
+
+  let bodyPx = s1;
+  let lensPx = s2;
+  const budget = avail - logoW - (textW ? gap * 2 : 0);
+  if (textW > budget) {
+    if (budget < bar * 0.8) {
+      // nothing usable is left next to the logo — logo only
+      body = "";
+      lens = "";
+      textW = 0;
+    } else {
+      // squeeze the type a little (long third-party lens names) before cutting
+      const squeeze = (px, text, weight) => {
+        if (!text) return px;
+        ctx.font = fontA(px, weight);
+        const w = ctx.measureText(text).width;
+        return w <= budget ? px : Math.max(Math.round(px * 0.78), Math.round(px * (budget / w)));
+      };
+      bodyPx = squeeze(s1, body, 700);
+      lensPx = squeeze(s2, lens, 400);
+      ctx.font = fontA(bodyPx, 700);
+      body = fitText(ctx, body, budget);
+      textW = body ? ctx.measureText(body).width : 0;
+      ctx.font = fontA(lensPx, 400);
+      lens = fitText(ctx, lens, budget);
+      textW = Math.max(textW, lens ? ctx.measureText(lens).width : 0);
+    }
+  }
+
+  let x = W - m;
+  if (textW) {
+    ctx.textAlign = "right";
+    if (body) {
+      ctx.font = fontA(bodyPx, 700);
+      ctx.fillStyle = ink;
+      ctx.fillText(body, x, y1);
+    }
+    if (lens) {
+      ctx.font = fontA(lensPx, 400);
+      ctx.fillStyle = sub;
+      ctx.fillText(lens, x, y2);
+    }
+    ctx.textAlign = "left";
+    x -= textW + gap;
+    if (logoW) {
+      ctx.strokeStyle = "#d9d9d9";
+      ctx.lineWidth = Math.max(1, Math.round(drawW * 0.0012));
+      ctx.beginPath();
+      ctx.moveTo(Math.round(x) + 0.5, cy - bar * 0.3);
+      ctx.lineTo(Math.round(x) + 0.5, cy + bar * 0.3);
+      ctx.stroke();
+      x -= gap;
+    }
+  }
+
+  if (imgW) {
+    ctx.drawImage(logo.img, x - imgW, cy - imgH / 2, imgW, imgH);
+  } else if (logoW) {
+    ctx.font = fontA(logoPx, logo.brand.weight);
+    ctx.fillStyle = ink;
+    ctx.textBaseline = "alphabetic";
+    drawTracked(ctx, logo.brand.text, x - logoW, cy + logoCap / 2, logoTrack);
+  }
+
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+}
+
 const INPUT_STYLE = {
   flex: 1,
   minWidth: 0,
@@ -734,6 +995,12 @@ export default function ExifFrameApp() {
     ...(typeof SAVED.fields === "object" ? SAVED.fields : null),
   }));
   const [filmLook, setFilmLook] = useState(() => !!SAVED.filmLook);
+  // strap style: which maker logo to print, how big, and an optional uploaded one
+  const [logoBrand, setLogoBrand] = useState(() =>
+    SAVED.logoBrand === "auto" || SAVED.logoBrand === "none" || BRANDS[SAVED.logoBrand] ? SAVED.logoBrand : "auto"
+  );
+  const [logoScale, setLogoScale] = useState(() => (LOGO_SCALES[SAVED.logoScale] ? SAVED.logoScale : "m"));
+  const [logoImg, setLogoImg] = useState(null);
   const [error, setError] = useState(null);
   const [fileName, setFileName] = useState("");
   const [loading, setLoading] = useState(false);
@@ -766,13 +1033,27 @@ export default function ExifFrameApp() {
     };
   }, []);
 
+  // bring a previously uploaded logo back after a reload
+  useEffect(() => {
+    let url = null;
+    try {
+      url = localStorage.getItem(LOGO_KEY);
+    } catch (e) {
+      /* private mode — nothing stored */
+    }
+    if (!url) return;
+    const im = new Image();
+    im.onload = () => setLogoImg(im);
+    im.src = url;
+  }, []);
+
   useEffect(() => {
     try {
-      localStorage.setItem(SETTINGS_KEY, JSON.stringify({ frameStyle, ratio, format, quality, fields, filmLook }));
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify({ frameStyle, ratio, format, quality, fields, filmLook, logoBrand, logoScale }));
     } catch (e) {
       /* private mode etc. — settings just won't persist */
     }
-  }, [frameStyle, ratio, format, quality, fields, filmLook]);
+  }, [frameStyle, ratio, format, quality, fields, filmLook, logoBrand, logoScale]);
 
   const handleFile = useCallback(async (file) => {
     if (!file) return;
@@ -920,6 +1201,14 @@ export default function ExifFrameApp() {
       drawFilmStrip(ctx, content, drawW, drawH, imgEl, fx, fields, caption, filmLook);
     } else if (frameStyle === "polaroid") {
       drawPolaroid(ctx, content, drawW, drawH, imgEl, fx, fields, caption, filmLook);
+    } else if (frameStyle === "strap") {
+      // white card with a maker-logo bar under the photo
+      const brandKey = logoBrand === "auto" ? detectBrand(cameraNameOf(fx)) : logoBrand;
+      drawStrap(ctx, content, drawW, drawH, imgEl, fx, filmLook, fmtStrapDateTime(fx?.DateTimeOriginal, exif?.DateTimeOriginal), {
+        img: logoBrand === "none" ? null : logoImg,
+        brand: brandKey && brandKey !== "none" ? BRANDS[brandKey] : null,
+        scale: logoScale,
+      });
     } else {
       // databack / lcd: full-bleed photo with an overlay
       const canvasW = drawW;
@@ -999,7 +1288,7 @@ export default function ExifFrameApp() {
     fctx.fillRect(0, 0, outW, outH);
     fctx.drawImage(content, Math.round((outW - content.width) / 2), Math.round((outH - content.height) / 2));
     setOutSize([outW, outH]);
-  }, [imgEl, fx, frameStyle, fields, caption, ratio, filmLook, fontsReady]);
+  }, [imgEl, fx, exif, frameStyle, fields, caption, ratio, filmLook, fontsReady, logoBrand, logoScale, logoImg]);
 
   // small debounce keeps typing in the metadata fields smooth — a full-size
   // canvas render per keystroke stutters on mobile
@@ -1075,9 +1364,43 @@ export default function ExifFrameApp() {
 
   const setMetaField = (key) => (value) => setMeta((m) => ({ ...m, [key]: value }));
 
+  // official logo artwork: a transparent PNG/SVG the user supplies replaces the
+  // built-in wordmark. Kept as a data URL so it survives reloads.
+  const handleLogoFile = (file) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onerror = () => setError("로고 파일을 읽지 못했어요.");
+    reader.onload = () => {
+      const im = new Image();
+      im.onload = () => {
+        setLogoImg(im);
+        setLogoBrand((b) => (b === "none" ? "auto" : b)); // a fresh upload should show
+        try {
+          localStorage.setItem(LOGO_KEY, reader.result);
+        } catch (e) {
+          /* too large for the quota — it still applies to this session */
+        }
+      };
+      im.onerror = () => setError("로고 이미지를 열 수 없어요. 배경이 투명한 PNG를 권장해요.");
+      im.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const clearLogo = () => {
+    setLogoImg(null);
+    try {
+      localStorage.removeItem(LOGO_KEY);
+    } catch (e) {
+      /* nothing stored */
+    }
+  };
+
   // databack/lcd render fixed layouts from the metadata; the toggles and
   // caption only affect the text-based frames
   const usesTextOptions = frameStyle === "film" || frameStyle === "polaroid";
+  // shown in the LOGO panel so it's clear what AUTO resolved the camera to
+  const autoBrand = frameStyle === "strap" ? detectBrand(cameraNameOf(fx)) : null;
 
   return (
     <div
@@ -1152,13 +1475,12 @@ export default function ExifFrameApp() {
             {/* frame style picker */}
             <div style={{ marginBottom: 16 }}>
               <div style={{ fontSize: 11, letterSpacing: 2, color: "#8a8577", marginBottom: 8 }}>FRAME STYLE</div>
-              <div style={{ display: "flex", gap: 8 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
                 {Object.entries(STYLES).map(([key, s]) => (
                   <button
                     key={key}
                     onClick={() => setFrameStyle(key)}
                     style={{
-                      flex: 1,
                       padding: "10px 6px",
                       fontSize: 12,
                       borderRadius: 4,
@@ -1173,6 +1495,87 @@ export default function ExifFrameApp() {
                 ))}
               </div>
             </div>
+
+            {/* maker logo — strap only */}
+            {frameStyle === "strap" && (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 11, letterSpacing: 2, color: "#8a8577", marginBottom: 8 }}>LOGO</div>
+                <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                  <select
+                    value={logoBrand}
+                    onChange={(e) => setLogoBrand(e.target.value)}
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      padding: "9px 10px",
+                      fontSize: 12,
+                      fontFamily: '"Share Tech Mono", "Courier New", monospace',
+                      borderRadius: 4,
+                      border: "1px solid #2b2824",
+                      background: "#1c1a17",
+                      color: "#e8e2d5",
+                    }}
+                  >
+                    <option value="auto">AUTO {autoBrand ? `— ${BRANDS[autoBrand].label}` : "— 감지 안 됨"}</option>
+                    {Object.entries(BRANDS).map(([key, b]) => (
+                      <option key={key} value={key}>
+                        {b.label}
+                      </option>
+                    ))}
+                    <option value="none">로고 없음</option>
+                  </select>
+                  <div style={{ display: "flex", gap: 4 }}>
+                    {["s", "m", "l"].map((key) => (
+                      <button
+                        key={key}
+                        onClick={() => setLogoScale(key)}
+                        title="로고 크기"
+                        style={{
+                          width: 34,
+                          padding: "9px 0",
+                          fontSize: 11,
+                          borderRadius: 4,
+                          border: "1px solid " + (logoScale === key ? "#c4581f" : "#2b2824"),
+                          background: logoScale === key ? "#2b2416" : "transparent",
+                          color: logoScale === key ? "#c4581f" : "#8a8577",
+                          cursor: "pointer",
+                        }}
+                      >
+                        {key.toUpperCase()}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", gap: 8 }}>
+                  <label
+                    style={{
+                      padding: "6px 12px",
+                      fontSize: 11,
+                      borderRadius: 20,
+                      border: "1px solid " + (logoImg ? "#c4581f" : "#2b2824"),
+                      background: logoImg ? "#2b2416" : "transparent",
+                      color: logoImg ? "#c4581f" : "#8a8577",
+                      cursor: "pointer",
+                    }}
+                  >
+                    {logoImg ? "로고 파일 사용 중" : "공식 로고 PNG 올리기"}
+                    <input type="file" accept="image/png,image/svg+xml,image/*" style={{ display: "none" }} onChange={(e) => handleLogoFile(e.target.files?.[0])} />
+                  </label>
+                  {logoImg && (
+                    <button
+                      onClick={clearLogo}
+                      style={{ padding: "6px 12px", fontSize: 11, borderRadius: 20, border: "1px solid #2b2824", background: "transparent", color: "#8a8577", cursor: "pointer" }}
+                    >
+                      지우기
+                    </button>
+                  )}
+                </div>
+                <div style={{ fontSize: 10, color: "#6f6a60", lineHeight: 1.6, marginTop: 8 }}>
+                  내장 로고는 브랜드명을 워드마크로 그린 <b>근사치</b>예요. 실제 공식 로고 그대로 쓰려면 배경이 투명한 PNG를 올리세요.
+                </div>
+              </div>
+            )}
 
             {/* film look effect */}
             <div style={{ marginBottom: 16 }}>
