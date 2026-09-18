@@ -138,10 +138,14 @@ exif-databack/
 
 - **검증됨(헤드리스 크로미움)**: 합성 EXIF(SONY ILCE-7M4 / ISO8000 / 64mm / F2.8 / 1/60 /
   2025:10:12 22:06:32 / 시그마 28-70 렌즈명)로 가로·세로 사진, 수동입력, 업로드 로고,
-  로고 없음, 빈 메타, 9:16 내보내기까지 렌더 확인. 폰트 3세트도 실제 폰트 파일을 주입해
-  자형까지 확인함(이 컨테이너는 Google Fonts가 차단돼서 npm `@fontsource/*`로 대체 주입).
+  로고 없음, 빈 메타, 9:16 내보내기까지 렌더 확인. 폰트 3세트도 실제 Google Fonts를 받아
+  자형까지 확인함 (JetBrains Mono / Barlow / Share Tech Mono 모두 `document.fonts`에 loaded).
   **실기기에서 Google Fonts 로드 실패 시**: mono는 `ui-monospace`/SF Mono로 떨어져 톤 유지,
   sans는 Helvetica로 떨어짐. 로고 워드마크 폴백은 원래 시스템 폰트라 영향 없음.
+  - 참고: 이 개발 컨테이너에서 헤드리스 크로미움으로 검증할 때는 에이전트 프록시의 CA를
+    크로미움이 모르기 때문에 `ERR_CERT_AUTHORITY_INVALID`로 웹폰트가 죽는다. 네트워크
+    차단이 아니라 **CA 신뢰 문제**이고, Playwright 컨텍스트에 `ignoreHTTPSErrors: true`를
+    주면 실제 Google Fonts가 정상 로드된다. 배포 환경(Vercel/실기기)과는 무관한 이슈.
 
 ### 데이터백 각인 (확정된 튜닝값 — 절대 임의로 바꾸지 말 것)
 GUYSTYLE이 레퍼런스 사진(밤 장면, 주황 7세그 각인) 기준으로 반복 조정해 확정한 값:
